@@ -1,0 +1,21 @@
+// AGT-122. The Worker `measure/run.mjs` starts with `wrangler dev`, to time the replay outside
+// Vitest: bundled by Wrangler as a deploy would be, with the app's compatibility date and flags.
+// GITHUB stands in for api.github.com, in the same process. Nothing here is deployed.
+{
+	"$schema": "../node_modules/wrangler/config-schema.json",
+	"name": "agents-light-run-measure",
+	"main": "./worker.ts",
+	"compatibility_date": "2026-10-01",
+	"compatibility_flags": ["nodejs_compat"],
+	"worker_loaders": [{ "binding": "LOADER" }],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "LIGHT", "class_name": "LightWorkspace" },
+			{ "name": "GITHUB", "class_name": "FakeGitHub" }
+		]
+	},
+	"exports": {
+		"LightWorkspace": { "type": "durable-object", "storage": "sqlite" },
+		"FakeGitHub": { "type": "durable-object", "storage": "sqlite" }
+	}
+}

@@ -1,0 +1,17 @@
+# AGT-122's spike is a root of its own, so that what it installs stays out of the repository's
+# lockfile. In the repository's workspace, just-bash and the sql.js it brings became optional peers
+# of `agents` and `drizzle-orm`, which the Worker ships.
+packages: []
+
+allowBuilds:
+  # Both come with just-bash, for archives its `tar` reads. The worker shell runs the copy
+  # @cloudflare/computer bundled, in workerd, where a native module cannot load.
+  "@mongodb-js/zstd": false
+  node-liblzma: false
+  esbuild: true
+  sharp: true
+  workerd: true
+
+# As at the root: undici below 7.30.1 has high advisories, and comes in through miniflare.
+overrides:
+  undici@>=7.0.0 <7.30.1: 7.30.1

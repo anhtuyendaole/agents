@@ -1,0 +1,17 @@
+// AGT-122. The Worker the spike's tests run in. Its compatibility date and flags are the ones the
+// app's own wrangler.jsonc has, on purpose: the first question is whether a shell in a Dynamic
+// Worker runs under them. `worker_loaders` is the one binding the app does not have.
+{
+	"$schema": "../node_modules/wrangler/config-schema.json",
+	"name": "agents-light-run-spike",
+	"main": "./worker.ts",
+	"compatibility_date": "2026-10-01",
+	"compatibility_flags": ["nodejs_compat"],
+	"worker_loaders": [{ "binding": "LOADER" }],
+	"durable_objects": {
+		"bindings": [{ "name": "LIGHT", "class_name": "LightWorkspace" }]
+	},
+	"exports": {
+		"LightWorkspace": { "type": "durable-object", "storage": "sqlite" }
+	}
+}
