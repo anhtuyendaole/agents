@@ -109,6 +109,7 @@ export function AgentDialog({
 	const [checks, setChecks] = useState<Map<string, McpCheck | null>>(() => new Map());
 	const [sandbox, setSandbox] = useState(agent?.definition.sandbox ?? false);
 	const [engine, setEngine] = useState<AgentEngine>(agent?.definition.engine ?? "gateweave");
+	const [memory, setMemory] = useState(agent?.definition.memory ?? false);
 	const chosenRepository = agent?.definition.repository ?? null;
 	const [repositoryId, setRepositoryId] = useState(chosenRepository?.id ?? "");
 	// The repositories the workspace's GitHub App reaches, which a sandbox can check out.
@@ -209,6 +210,7 @@ export function AgentDialog({
 					}),
 				sandbox,
 				engine,
+				memory,
 				// The repository is checked out in the sandbox, so it goes with it.
 				repositoryId: sandbox && repositoryId !== "" ? repositoryId : null,
 			});
@@ -466,6 +468,21 @@ export function AgentDialog({
 							</p>
 						</div>
 					)}
+					<Label className="flex cursor-pointer items-start gap-3 font-normal">
+						<Checkbox
+							className="mt-0.5"
+							checked={memory}
+							onCheckedChange={(checked) => setMemory(checked === true)}
+						/>
+						<span className="space-y-1">
+							<span className="block text-sm font-medium">Memory</span>
+							<span className="block text-xs text-muted-foreground">
+								{engine === "gateweave"
+									? "The agent can note facts, decisions and preferences in the workspace's memory, and recall them in later runs. Every member of the workspace can read the notes it keeps on the Memory page, those from someone's own chat with it included. What it notes about the workspace or a repository, or in a run a trigger started, waits there for an owner or admin."
+									: `${ENGINE_NAMES[engine]} does not have the memory tools yet: they work with the Gateweave engine.`}
+							</span>
+						</span>
+					</Label>
 					{error && (
 						<p role="alert" className="text-sm text-destructive">
 							{error}

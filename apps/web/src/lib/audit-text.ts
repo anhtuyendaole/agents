@@ -5,9 +5,13 @@ import { type AuditEvent, type AuditPerson, type AuditValue, hostOf } from "#/li
 
 type People = Record<string, AuditPerson>;
 
-/** Who made the change: a member, the app itself, or someone whose account is gone. */
+/** Who made the change: a member, an agent, the app itself, or someone whose account is gone. */
 export function auditActor(event: AuditEvent, people: People): string {
-	if (event.actorId === null) return "Gateweave Agents";
+	if (event.actorId === null) {
+		const agent = text(event.detail.agent);
+		const agents = event.action === "memory.remembered" || event.action === "memory.forgotten";
+		return agents && agent ? `The agent ${agent}` : "Gateweave Agents";
+	}
 	return people[event.actorId]?.name ?? "Deleted member";
 }
 
@@ -22,6 +26,7 @@ const FIELD_NAMES: Record<string, string> = {
 	sandbox: "sandbox",
 	repository: "repository",
 	engine: "engine",
+	memory: "memory",
 	runtimes: "coding agents",
 	assets: "assets",
 	prompt: "prompt",
@@ -192,7 +197,51 @@ export function auditSentence(event: AuditEvent, people: People): string {
 			return `deleted the project ${label}`;
 		case "library.removed":
 			return `removed ${label} from the library`;
+		case "memory.added":
+			return `added ${memory(target.label)}`;
+		case "memory.edited":
+			return `edited ${memory(target.label)}`;
+		case "memory.approved":
+			return `approved ${memory(target.label)}, so agents recall it`;
+		case "memory.dismissed":
+			return `dismissed ${removedMemory(detail)}, which waited for approval`;
+		case "memory.deleted":
+			return `deleted ${removedMemory(detail)}`;
+		case "memory.remembered":
+			return detail.waiting
+				? `remembered ${memory(target.label)}${whyWaiting(detail)}, so it waits for approval`
+				: `remembered ${memory(target.label)}`;
+		case "memory.forgotten":
+			return `forgot ${memory(target.label)}, which it wrote itself`;
 	}
+}
+
+/** A memory by the start of its text, which is all the log keeps; one about a person by nothing. */
+function memory(excerpt: string | null): string {
+	return excerpt === null ? "a memory about a person" : `the memory “${excerpt}”`;
+}
+
+/** A memory that was removed, of which the log keeps the kind and what it was about, no text. */
+function removedMemory(detail: AuditEvent["detail"]): string {
+	const kind = text(detail.kind) ?? "memory";
+	const about = {
+		workspace: " about the workspace",
+		agent: " about an agent",
+		repository: " about a repository",
+		person: " about a person",
+	}[text(detail.scope) ?? ""];
+	return `a ${kind}${about ?? ""}`;
+}
+
+/** Why what an agent remembered waits: what started its run, or else what it is about. */
+function whyWaiting(detail: AuditEvent["detail"]): string {
+	if (detail.origin === "trigger") return " in a run a trigger started";
+	if (detail.origin === "replay") return " in a replay of a run a trigger started";
+	if (detail.origin === "unknown") return " in a run whose start could not be read";
+	// In a person's run, what every agent, or a repository's, would recall waits.
+	if (detail.scope === "workspace") return " about the workspace";
+	if (detail.scope === "repository") return " about a repository";
+	return "";
 }
 
 function trackHost(value: AuditValue | undefined): string {

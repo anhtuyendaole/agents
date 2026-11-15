@@ -274,6 +274,20 @@
       "when": 1794694625276,
       "tag": "0038_parched_lady_ursula",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "6",
+      "when": 1794712059968,
+      "tag": "0039_agent_memory",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "6",
+      "when": 1794712067742,
+      "tag": "0040_memory_search",
+      "breakpoints": true
     }
   ]
 }

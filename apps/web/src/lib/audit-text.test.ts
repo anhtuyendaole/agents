@@ -91,6 +91,65 @@ describe("audit events in words", () => {
 		).toBe("connected the agent Coder to the Track workspace acme on track.example.com");
 	});
 
+	it("names the agent that wrote to memory, and a memory by the start of its text", () => {
+		const remembered = event({
+			action: "memory.remembered",
+			actorId: null,
+			target: { type: "memory", id: "m-1", label: "Deploys go out on Tuesdays." },
+			detail: { agent: "Scout", agentId: "a-1", run: "r-1", waiting: true, origin: "trigger" },
+		});
+		expect(auditActor(remembered, people)).toBe("The agent Scout");
+		expect(auditSentence(remembered, people)).toBe(
+			"remembered the memory “Deploys go out on Tuesdays.” in a run a trigger started, so it waits for approval",
+		);
+		expect(
+			auditSentence({ ...remembered, detail: { agent: "Scout", waiting: false } }, people),
+		).toBe("remembered the memory “Deploys go out on Tuesdays.”");
+		// It says why one waits: what started the run, or in a person's run what it is about.
+		const waits = (detail: AuditEvent["detail"]) =>
+			auditSentence(
+				{ ...remembered, detail: { agent: "Scout", waiting: true, ...detail } },
+				people,
+			);
+		expect(waits({ origin: "replay", scope: "agent" })).toBe(
+			"remembered the memory “Deploys go out on Tuesdays.” in a replay of a run a trigger started, so it waits for approval",
+		);
+		expect(waits({ origin: "person", scope: "workspace" })).toBe(
+			"remembered the memory “Deploys go out on Tuesdays.” about the workspace, so it waits for approval",
+		);
+		expect(waits({ origin: "person", scope: "repository" })).toBe(
+			"remembered the memory “Deploys go out on Tuesdays.” about a repository, so it waits for approval",
+		);
+		expect(auditSentence({ ...remembered, action: "memory.forgotten" }, people)).toBe(
+			"forgot the memory “Deploys go out on Tuesdays.”, which it wrote itself",
+		);
+		const say = (action: AuditEvent["action"], label: string | null = "Reviews need two people.") =>
+			auditSentence(event({ action, target: { type: "memory", id: "m-2", label } }), people);
+		expect(say("memory.added")).toBe("added the memory “Reviews need two people.”");
+		expect(say("memory.edited")).toBe("edited the memory “Reviews need two people.”");
+		expect(say("memory.approved")).toBe(
+			"approved the memory “Reviews need two people.”, so agents recall it",
+		);
+		// What was removed is named by its kind and what it was about, with none of its text.
+		const removed = (action: AuditEvent["action"], detail: AuditEvent["detail"]) =>
+			auditSentence(
+				event({ action, target: { type: "memory", id: "m-2", label: null }, detail }),
+				people,
+			);
+		expect(removed("memory.dismissed", { kind: "decision", scope: "workspace" })).toBe(
+			"dismissed a decision about the workspace, which waited for approval",
+		);
+		expect(removed("memory.deleted", { kind: "preference", scope: "person" })).toBe(
+			"deleted a preference about a person",
+		);
+		expect(removed("memory.deleted", { kind: "fact", scope: "agent" })).toBe(
+			"deleted a fact about an agent",
+		);
+		expect(removed("memory.deleted", {})).toBe("deleted a memory");
+		// One about a person is logged without its text.
+		expect(say("memory.added", null)).toBe("added a memory about a person");
+	});
+
 	it("keeps a URL's host only, and finds which fields changed", () => {
 		expect(hostOf("https://hooks.example.com/abc?token=secret")).toBe("hooks.example.com");
 		expect(hostOf("not a url")).toBeNull();
