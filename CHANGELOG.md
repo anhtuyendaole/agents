@@ -8,6 +8,28 @@ read its entry before updating a self-hosted copy.
 Each version's [GitHub release](https://github.com/gateweavehq/agents/releases) carries the same
 notes. Publishing a release deploys it to Gateweave Cloud.
 
+## [0.28.1] - 2026-11-16
+
+Puts back a guard that v0.28.0 dropped by mistake, and lets the schema generator run again.
+There is no migration in this release.
+
+### Fixed
+
+- **A server function's request from another origin is refused again.** The framework refuses
+  such a request unless the browser says it comes from the app's own origin. v0.28.0 added a file
+  that replaced the framework's default without listing that guard, so for some hours it did not
+  run. A page on an unrelated site could not act as a signed-in person, because browsers keep
+  the session cookie off its requests; a page on another host of the same site (another
+  subdomain of the deployment's domain) could have, for what a workspace's pages change.
+  ([#254](https://github.com/gateweavehq/agents/pull/254))
+- **`pnpm auth:schema` runs again.** Since v0.28.0 it stopped with "Drizzle's session cannot be
+  reached". Only this developer command was affected.
+  ([#253](https://github.com/gateweavehq/agents/pull/253))
+
+### If you run your own
+
+- **If you run v0.28.0, update.**
+
 ## [0.28.0] - 2026-11-16
 
 A server no longer needs a `SECRETS_KEY` set by hand before workspaces can keep their keys, and a
