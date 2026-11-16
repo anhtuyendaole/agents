@@ -11,6 +11,7 @@ import {
 	type agentDefinitionInput,
 	ENGINE_NAMES,
 	ENGINE_PROVIDERS,
+	FILES_NEED_REPOSITORY,
 	INSTRUCTION_KINDS,
 	MODEL_PROVIDER_NAMES,
 	type ModelProvider,
@@ -41,6 +42,7 @@ export function createAgent(db: Db, input: Definition, now: number): Agent {
 	checkMcpServers(db, input, new Set());
 	checkRepository(db, input, null);
 	checkEngine(input);
+	checkFiles(input);
 	const id = crypto.randomUUID();
 	const row = {
 		id,
@@ -70,6 +72,7 @@ export function updateAgent(db: Db, id: string, input: Definition, now: number):
 	checkMcpServers(db, input, pinnedServers(db, id));
 	checkRepository(db, input, current.repositoryId);
 	checkEngine(input);
+	checkFiles(input);
 	const row = db
 		.update(agents)
 		.set({
@@ -208,6 +211,8 @@ export function agentSnapshot(db: Db, id: string): AgentSnapshot | null {
 		sandbox: definition.sandbox,
 		engine: definition.engine,
 		memory: definition.memory,
+		// Left out of an agent without it, whose snapshot is then what it always was.
+		...(definition.files ? { files: true as const } : {}),
 		updatedAt: agent.updatedAt,
 	};
 }
@@ -239,6 +244,7 @@ function definitionRow(agentId: string, input: Definition) {
 		repositoryId: input.repositoryId,
 		engine: input.engine,
 		memory: input.memory,
+		files: input.files,
 	};
 }
 
@@ -297,16 +303,18 @@ function checkEnvironment(
 
 /**
  * The repository must be one the workspace's GitHub App reaches, and the agent must have a
- * sandbox to check it out in. Like an asset, a repository the app no longer reaches stays chosen
- * if it was, and the agent's turns say why they cannot go on, but it cannot be chosen anew.
+ * sandbox to check it out in, or work on its files without one. Like an asset, a repository the
+ * app no longer reaches stays chosen if it was, and the agent's turns say why they cannot go on,
+ * but it cannot be chosen anew.
  */
 function checkRepository(
 	db: Db,
-	input: Pick<Definition, "repositoryId" | "sandbox">,
+	input: Pick<Definition, "repositoryId" | "sandbox" | "files">,
 	chosenId: string | null,
 ): void {
 	if (input.repositoryId === null) return;
-	if (!input.sandbox) {
+	// The words name the sandbox alone until a form offers the other way to have one.
+	if (!input.sandbox && !input.files) {
 		throw new AgentError(
 			"Only an agent with a sandbox can have a repository: it is checked out there",
 		);
@@ -318,15 +326,24 @@ function checkRepository(
 		.get();
 	if (!repository) throw new AgentError("There is no such repository in the workspace");
 	if (repository.id === chosenId) return;
-	const problem = repositoryProblem(repository);
+	const problem = repositoryProblem(repository, input.files);
 	if (problem) throw new AgentError(problem);
 }
 
-/** Why the workspace's GitHub App cannot check out a repository for a sandbox; null if it can. */
-function repositoryProblem(repository: typeof repositories.$inferSelect): string | null {
+/**
+ * Why the workspace's GitHub App cannot check out a repository for a sandbox, or read it for an
+ * agent that works on its `files` without one; null if it can. Each is told in its own words
+ * where they differ: an agent without a sandbox is not told what sandboxes do.
+ */
+function repositoryProblem(
+	repository: typeof repositories.$inferSelect,
+	files: boolean,
+): string | null {
 	const name = `${repository.owner}/${repository.name}`;
 	if (repository.provider === "gitlab") {
-		return `${name} is on GitLab: sandboxes check out GitHub repositories only, for now`;
+		return files
+			? `${name} is on GitLab: an agent works on the files of GitHub repositories only, for now`
+			: `${name} is on GitLab: sandboxes check out GitHub repositories only, for now`;
 	}
 	if (repository.provider !== "github" || repository.installationId === null) {
 		return `${name} is not reached through the workspace's GitHub App`;
@@ -356,6 +373,16 @@ function checkEngine(input: Pick<Definition, "engine" | "provider" | "sandbox">)
 }
 
 /**
+ * What working on a repository's files without a sandbox needs besides what `checkEngine` and
+ * `checkMcpServers` already hold for any agent without one: Gateweave's own loop, and no MCP
+ * server that runs as a local command. There is nothing else for such a turn to work on, so it
+ * needs the repository. That it never comes with a sandbox is the input schema's rule.
+ */
+function checkFiles(input: Pick<Definition, "files" | "repositoryId">): void {
+	if (input.files && input.repositoryId === null) throw new AgentError(FILES_NEED_REPOSITORY);
+}
+
+/**
  * What `createAgent` would refuse about an agent that works in a sandbox on a repository, said
  * before anything is made: Connect Track checks it before the browser leaves, by the very rules
  * the write applies after it comes back. Throws an `AgentError`.
@@ -364,28 +391,28 @@ export function checkSandboxChoices(
 	db: Db,
 	choices: Pick<Definition, "repositoryId" | "engine" | "provider">,
 ): void {
-	const input = { ...choices, sandbox: true };
+	const input = { ...choices, sandbox: true, files: false };
 	checkRepository(db, input, null);
 	checkEngine(input);
 }
 
 /**
- * The repository the agent's sandbox checks out, as a turn hands it to the runtime, or why it
- * cannot be; null when the agent has none.
+ * The repository the agent's sandbox checks out, or its turns read their files from, as a turn
+ * hands it to the runtime, or why it cannot be; null when the agent has none.
  */
 export function agentRepository(
 	db: Db,
 	agentId: string,
 ): SandboxRepository | { problem: string } | null {
 	const found = db
-		.select({ repository: repositories })
+		.select({ repository: repositories, files: agentDefinitions.files })
 		.from(agentDefinitions)
 		.innerJoin(repositories, eq(repositories.id, agentDefinitions.repositoryId))
 		.where(eq(agentDefinitions.agentId, agentId))
 		.get();
 	if (!found) return null;
 	const { repository } = found;
-	const problem = repositoryProblem(repository);
+	const problem = repositoryProblem(repository, found.files);
 	if (problem || repository.installationId === null) {
 		return { problem: problem ?? "The repository cannot be reached" };
 	}

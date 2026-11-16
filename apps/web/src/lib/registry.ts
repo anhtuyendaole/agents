@@ -87,6 +87,7 @@ const AGENT_FIELDS = [
 	"repository",
 	"engine",
 	"memory",
+	"files",
 ] as const;
 
 function agentChanges(before: AgentDetail, after: AgentDetail): string[] {
