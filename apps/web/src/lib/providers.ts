@@ -14,6 +14,7 @@ import {
 	type WorkersAiOffer,
 	workersAiDailyLimit,
 } from "@gateweave/agents-model";
+import type { SecretsProblem } from "@gateweave/agents-registry";
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { invitationLink } from "#/lib/invitation";
@@ -47,7 +48,9 @@ export interface WorkersAiSpend {
 }
 
 /**
- * The keys, whether this server can keep keys at all (it needs `SECRETS_KEY`), whether it offers
+ * The keys, why the workspace cannot keep keys on this server if it cannot (the registry's
+ * `secretsState`: the server has no key to seal with, or lost the one that sealed what the
+ * workspace holds), whether it offers
  * Workers AI, which has no key: the deployment pays for it, and whether it runs sandboxes for the
  * workspace, which the deployment pays for too, with how much of them the workspace used today.
  */
@@ -58,6 +61,7 @@ export const getProviderKeys = createServerFn({ method: "GET" })
 			data: slug,
 		}): Promise<{
 			configured: boolean;
+			problem: SecretsProblem | null;
 			keys: ProviderKey[];
 			/** Whether this workspace may use Workers AI now. */
 			workersAi: boolean;
@@ -78,13 +82,15 @@ export const getProviderKeys = createServerFn({ method: "GET" })
 			const { workspaceId } = found.member.membership;
 			const sandbox = sandboxOfferTo(env, workspaceId);
 			const offer = workersAiOffer(workspaceId);
-			const [keys, seconds, dollars] = await Promise.all([
+			const [problem, keys, seconds, dollars] = await Promise.all([
+				found.registry.secretsState(),
 				found.registry.listProviderKeys(),
 				sandbox === "offered" ? found.registry.sandboxSecondsToday() : null,
 				offer === "offered" ? found.registry.workersAiSpentToday() : null,
 			]);
 			return {
-				configured: Boolean(env.SECRETS_KEY),
+				configured: problem === null,
+				problem,
 				keys,
 				workersAi: offer === "offered",
 				workersAiOffer: offer,

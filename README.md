@@ -20,6 +20,7 @@
   <a href="https://agents-demo.gateweave.com"><strong>Try the demo</strong></a> ·
   <a href="https://gateweave.com/agents"><strong>See what it does</strong></a> ·
   <a href="#self-hosting"><strong>Deploy your own</strong></a> ·
+  <a href="docs/first-pull-request.md"><strong>From zero to a first pull request</strong></a> ·
   <a href="setups/">Ready-made setups</a>
 </p>
 
@@ -121,12 +122,16 @@ and can close sign-up to people it has not let in (account page > This server). 
 uncomment and fill in `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` in `.dev.vars`. To connect
 workspaces to GitHub, create a GitHub App as [docs/github-app.md](docs/github-app.md) describes. GitLab
 needs nothing on the server: an owner or admin connects it in Settings > GitLab with an access
-token, which the server keeps encrypted, so `SECRETS_KEY` must be set.
+token, which the server keeps encrypted.
 
-Workspaces keep their model provider keys and environment secrets encrypted with the server's
-`SECRETS_KEY`, which `pnpm dev:setup` generates for local development. On a deployed Worker, set
-it once with `openssl rand -base64 32 | pnpm wrangler secret put SECRETS_KEY` and keep it: if it
-changes, workspaces have to add their keys and secret values again.
+Workspaces keep their model provider keys and environment secrets encrypted. A deployed Worker
+needs no step to try that: without a `SECRETS_KEY` it encrypts under a key made from
+`BETTER_AUTH_SECRET`. Then one secret both signs sessions and opens everything workspaces
+stored, and changing it makes all of that unreadable. For anything beyond a first try, generate a
+`SECRETS_KEY` with `openssl rand -base64 32`, keep a copy and give it to the server with
+`pnpm wrangler secret put SECRETS_KEY`;
+[docs/self-hosting.md](docs/self-hosting.md#the-key-that-encrypts-workspaces-secrets) has the
+rest, and how to keep secret storage off. `pnpm dev:setup` generates one for local development.
 
 Chat sends each agent's requests straight to its model provider. To send them through a
 [Cloudflare AI Gateway](https://developers.cloudflare.com/ai-gateway/) instead, for its logs,
@@ -169,7 +174,9 @@ to their requests on the way out, so the key never enters the sandbox either.
 The button copies Agents to your GitHub or GitLab account, creates the database, and deploys it
 to your Cloudflare account; every push to your copy deploys again. From the command line, use
 `pnpm run deploy`. See [docs/self-hosting.md](docs/self-hosting.md) for the first deploy, every
-setting, your own domain, email, sandboxes and their limits, and updating.
+setting, your own domain, email, sandboxes and their limits, and updating, and
+[docs/first-pull-request.md](docs/first-pull-request.md) for each step from the button to an
+agent's first pull request, with the plan and the accounts each one needs.
 
 ## Contributing
 

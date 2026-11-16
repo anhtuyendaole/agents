@@ -45,10 +45,17 @@ declare namespace Cloudflare {
 		GITHUB_APP_WEBHOOK_SECRET?: string;
 		/**
 		 * Encrypts what workspaces entrust to the server, such as model provider keys: at least 32
-		 * random bytes, base64 (`openssl rand -base64 32`). Model keys are off when unset. Never
-		 * change it once keys are saved: they cannot be opened without it.
+		 * random bytes, base64 (`openssl rand -base64 32`). When unset, they are encrypted under a
+		 * key derived from BETTER_AUTH_SECRET instead (packages/registry/src/secrets.ts). Never
+		 * change it once keys are saved: they cannot be opened without it, and a workspace that
+		 * holds what it encrypted keeps nothing new until it is back.
 		 */
 		SECRETS_KEY?: string;
+		/**
+		 * `off` keeps the server from encrypting under a key derived from BETTER_AUTH_SECRET: without
+		 * a SECRETS_KEY it then keeps no secrets, as a server without one did before there was such a key.
+		 */
+		SECRETS_FROM_AUTH_SECRET?: string;
 		/**
 		 * The AI Gateway that agents' model calls go through, as
 		 * `https://gateway.ai.cloudflare.com/v1/<account id>/<gateway id>`. Calls go straight to the

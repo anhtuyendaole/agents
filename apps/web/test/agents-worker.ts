@@ -98,6 +98,8 @@ export interface SentEmail {
  * these Node tests do not load.
  */
 export interface RegistryStub {
+	/** How many sealed values each of the server's keys sealed. */
+	sealedCounts(): Promise<{ explicit: number; derived: number }>;
 	createProject(input: ProjectInput): Promise<Project>;
 	listProjects(): Promise<Project[]>;
 	overview(): Promise<Overview>;
@@ -273,7 +275,8 @@ function builtModules(): V4ModuleDefinition[] {
  * With `github`, the Worker is set up as that GitHub App, and its requests to github.com and
  * api.github.com reach the fake instead of failing. With `models`, its requests to the model
  * providers' APIs reach that fake. Requests to a host in `hosts` reach its handler, as an MCP
- * server elsewhere would be reached. It has a `SECRETS_KEY` unless `secrets` is false, and the
+ * server elsewhere would be reached. It has a `SECRETS_KEY` unless `secrets` is false, which leaves it
+ * sealing under the key from `BETTER_AUTH_SECRET` as a first deploy does, and the
  * other settings in `settings` (such as `WORKERS_AI_TOKEN`, which offers Workers AI).
  */
 export async function startAgents(
@@ -311,8 +314,9 @@ export async function startAgents(
 	const names = Array.from({ length: isolates }, (_, i) =>
 		i === 0 ? "agents" : `agents-${i + 1}`,
 	);
-	// Miniflare 5 still takes its documented v4 options through this converter.
-	const mf = new Miniflare(
+	// Miniflare 5 still takes its documented v4 options through this converter. `changed` is what
+	// `restartWith` sets or, with null, takes away.
+	const options = (changed: Record<string, string | null> = {}) =>
 		convertV4MiniflareOptions({
 			// Keep what the Worker logs for `logs`, and still show it as Miniflare would.
 			handleStructuredLogs: (log) => {
@@ -328,15 +332,18 @@ export async function startAgents(
 					modulesRoot: serverDir,
 					compatibilityDate: config.compatibility_date,
 					compatibilityFlags: config.compatibility_flags,
-					bindings: {
-						...(withoutSecret ? {} : { BETTER_AUTH_SECRET: secret }),
-						BETTER_AUTH_URL: origin,
-						EMAIL_FROM: `${EMAIL_FROM.name} <${EMAIL_FROM.email}>`,
-						...(secrets ? { SECRETS_KEY: secretsKey } : {}),
-						...settings,
-						...isolateSettings[index],
-						...github?.bindings(),
-					},
+					bindings: Object.fromEntries(
+						Object.entries<string | null>({
+							...(withoutSecret ? {} : { BETTER_AUTH_SECRET: secret }),
+							BETTER_AUTH_URL: origin,
+							EMAIL_FROM: `${EMAIL_FROM.name} <${EMAIL_FROM.email}>`,
+							...(secrets ? { SECRETS_KEY: secretsKey } : {}),
+							...settings,
+							...isolateSettings[index],
+							...github?.bindings(),
+							...changed,
+						}).filter(([, value]) => value !== null),
+					),
 					serviceBindings: { EMAIL: "outbox" },
 					d1Databases: { [withoutDatabase ? "UNBOUND_DB" : "DB"]: "agents-test" },
 					// Every copy uses the first one's Durable Objects.
@@ -393,8 +400,8 @@ export async function startAgents(
 					serviceBindings: { AGENTS: { name: names[0] as string, entrypoint: "Backup" } },
 				},
 			],
-		}),
-	);
+		});
+	const mf = new Miniflare(options());
 
 	const db = await mf.getD1Database(withoutDatabase ? "UNBOUND_DB" : "DB");
 	const migrations = join(app, "migrations");
@@ -505,6 +512,14 @@ export async function startAgents(
 			// `conversationName` in packages/runtime.
 			return namespace.getByName(`${workspaceId}:${conversationId}`);
 		},
+		/**
+		 * Starts the Worker again with these settings changed, a null one taken away, as a deploy
+		 * after its operator changed a secret does. The database and the Durable Objects keep what
+		 * they hold. `db` from before is no longer usable.
+		 */
+		restartWith: (changed: Record<string, string | null>) => mf.setOptions(options(changed)),
+		/** The `SECRETS_KEY` it started with, to give it back after taking it away. */
+		secretsKey,
 		dispose: () => mf.dispose(),
 	};
 }
