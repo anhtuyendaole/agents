@@ -31,8 +31,10 @@ test("copies prompt and Markdown asset text for use outside the app", async ({ p
 		const shownText = await page.locator("figure pre code").textContent();
 		expect(shownText?.replaceAll("\r\n", "\n")).toBe(content);
 		await page.getByRole("button", { name: button }).click();
-		expect(
-			(await page.evaluate(() => navigator.clipboard.readText())).replaceAll("\r\n", "\n"),
-		).toBe(content);
+		await expect
+			.poll(async () =>
+				(await page.evaluate(() => navigator.clipboard.readText())).replaceAll("\r\n", "\n"),
+			)
+			.toBe(content);
 	}
 });
