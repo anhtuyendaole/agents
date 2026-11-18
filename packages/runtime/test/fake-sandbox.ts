@@ -7,6 +7,7 @@
 import { DurableObject, env } from "cloudflare:workers";
 import type { SandboxRepository } from "@gateweave/agents-model";
 import type { CheckoutPort, CheckoutResult } from "../src/checkout";
+import type { Comparison } from "../src/checks";
 import type { EngineExit, EngineJob, EnginePort } from "../src/engines";
 import type { LocalCommand, LocalServerPort } from "../src/local-servers";
 import { type EngineMeter, meterModelRequest } from "../src/meter";
@@ -70,10 +71,10 @@ export class MemorySandbox implements CheckoutPort, PushPort, CheckPort {
 	readonly commitAnswers: CommitResult[] = [];
 	readonly commitPushes: CommitPush[] = [];
 	/**
-	 * What the checkout differs in from its commit the next times it is asked, in git's words;
-	 * then, and for a null, nothing. An error is thrown, as a sandbox that cannot say throws.
+	 * How the checkout compares with its commit the next times it is asked; then, and for a
+	 * null, it is the commit. An error is thrown, as a sandbox that cannot say throws.
 	 */
-	readonly changes: (string | null | Error)[] = [];
+	readonly changes: (Comparison | Error)[] = [];
 	/** A clock for the tests that time commands: each command moves it by its `seconds`. */
 	clock = 1_000_000;
 	/** What was asked of it that changes or runs something, in order. */
@@ -97,7 +98,7 @@ export class MemorySandbox implements CheckoutPort, PushPort, CheckPort {
 		return this.commitAnswers.shift() ?? { head };
 	}
 
-	async changedSince(head: string): Promise<string | null> {
+	async changedSince(head: string): Promise<Comparison> {
 		this.log.push(`compare ${head.slice(0, 7)}`);
 		const answer = this.changes.shift() ?? null;
 		if (answer instanceof Error) throw answer;
@@ -287,8 +288,8 @@ export class FakeSandbox
 		return this.#memory.pushCommit(branch, head);
 	}
 
-	/** What the checkout differs in from its commit the next times it is asked. */
-	answerChanges(changes: (string | null)[]): void {
+	/** How the checkout compares with its commit the next times it is asked. */
+	answerChanges(changes: Comparison[]): void {
 		this.#memory.changes.push(...changes);
 	}
 

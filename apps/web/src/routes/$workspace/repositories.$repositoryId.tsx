@@ -209,9 +209,10 @@ function Checks() {
 	const { id: repositoryId, checks } = detail.repository;
 	return (
 		<RepositoryChecks
-			// The form starts over from what the registry holds: after a save, after a reload, and
-			// when the page goes on to another repository, whose checks may read the same.
-			key={`${repositoryId}\n${checks.join("\n")}`}
+			// The form starts over when the page goes on to another repository, whose checks may
+			// read the same. For the one repository it keeps its draft through a refresh of the
+			// page, and takes the saved checks itself when the draft has no edits.
+			key={repositoryId}
 			checks={checks}
 			admin={admin}
 			onSave={async (next) => {

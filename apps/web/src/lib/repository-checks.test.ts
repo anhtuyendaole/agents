@@ -1,6 +1,6 @@
 import { CHECK_ONE_LINE } from "@gateweave/agents-model";
 import { describe, expect, it } from "vitest";
-import { checksOfText, checksProblem } from "./repository-checks";
+import { checksOfText, checksProblem, draftAfterRefresh } from "./repository-checks";
 
 describe("the form for a repository's checks", () => {
 	it("R1: reads one command to a line, without blank lines or the space around each", () => {
@@ -16,5 +16,36 @@ describe("the form for a repository's checks", () => {
 		expect(checksProblem("x".repeat(301))).toBe("A check is at most 300 characters");
 		// A line break ends a command here, so only another control character is left to refuse.
 		expect(checksProblem("pnpm\ttest")).toBe(CHECK_ONE_LINE);
+	});
+
+	it("R1: keeps what someone is typing when the saved list changes under it, and follows the list when nothing was typed", () => {
+		const base = "pnpm check\npnpm test";
+		// Nothing changed under the form: the draft is what it was.
+		expect(draftAfterRefresh({ text: "pnpm check", base }, base)).toEqual({
+			text: "pnpm check",
+			base,
+			stale: false,
+		});
+		// Another admin saved while this form held no edits, or only space: it takes the new list.
+		for (const text of [base, `${base}\n\n`, "  pnpm check\npnpm test  "]) {
+			expect(draftAfterRefresh({ text, base }, "pnpm lint")).toEqual({
+				text: "pnpm lint",
+				base: "pnpm lint",
+				stale: false,
+			});
+		}
+		// The list this form's own save wrote comes back: the draft is that list, and is not stale.
+		expect(draftAfterRefresh({ text: "pnpm lint\n", base }, "pnpm lint")).toEqual({
+			text: "pnpm lint",
+			base: "pnpm lint",
+			stale: false,
+		});
+		// Another admin saved while this one was typing: the typing stays, and the form says that
+		// the saved list is not the one it began from.
+		expect(draftAfterRefresh({ text: "pnpm check\npnpm e2e", base }, "pnpm lint")).toEqual({
+			text: "pnpm check\npnpm e2e",
+			base,
+			stale: true,
+		});
 	});
 });

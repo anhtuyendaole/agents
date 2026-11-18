@@ -4,6 +4,7 @@
  * only records. The work is committed first and pushed after, as two steps: when the repository
  * has checks (`./checks.ts`), they run between the two, on the commit.
  */
+import type { Comparison } from "./checks";
 import type { CommitAuthor, CommitResult } from "./pull-requests";
 import type { CommandResult } from "./sandbox-tools";
 
@@ -78,25 +79,26 @@ export async function commitWork(
 const CHANGED_SHOWN = 20;
 
 /**
- * What differs in the checkout from the commit `head`, in git's words, for the model to read; null
- * when nothing does. The repository's checks ran in this checkout, so a difference after them
- * means that some of them ran on files that are not the commit's: a formatter that fixed a file,
- * a snapshot a test rewrote, or a command the agent left running. Files git ignores do not count:
- * what a build leaves behind is not the work.
+ * Whether the checkout still is the commit `head`: null when it is; what differs, in git's words,
+ * for the model to read; or why that could not be told. The repository's checks run in this
+ * checkout, so a difference after one of them means that the next would run on files that are
+ * not the commit's: a formatter fixed a file, a test rewrote a snapshot, or a command the agent
+ * left running wrote something. Files git ignores do not count: what a build leaves behind is
+ * not the work.
  *
- * It says that something changed whenever it cannot tell, so that what it cannot read is never
- * taken for a clean checkout.
+ * What git cannot say is never taken for a clean checkout, and never for a change either.
  */
-export async function changedSince(git: Git, head: string): Promise<string | null> {
+export async function changedSince(git: Git, head: string): Promise<Comparison> {
 	const at = await git(["rev-parse", "HEAD"]);
-	if (at.exitCode !== 0) return "The checkout's commit could not be read.";
-	if (at.output.trim() !== head) return "A new commit was made while the checks ran.";
+	if (at.exitCode !== 0) return { unverified: "The checkout's commit could not be read." };
+	if (at.output.trim() !== head) return { changed: "A new commit was made while the checks ran." };
 	const status = await git(["status", "--porcelain", "--untracked-files=all"]);
-	if (status.exitCode !== 0) return "The checkout's changes could not be read.";
+	if (status.exitCode !== 0) return { unverified: "The checkout's changes could not be read." };
 	const changed = status.output.split("\n").filter((line) => line.trim() !== "");
 	if (changed.length === 0) return null;
 	const more = changed.length - CHANGED_SHOWN;
-	return [...changed.slice(0, CHANGED_SHOWN), ...(more > 0 ? [`and ${more} more`] : [])].join("\n");
+	const shown = [...changed.slice(0, CHANGED_SHOWN), ...(more > 0 ? [`and ${more} more`] : [])];
+	return { changed: shown.join("\n") };
 }
 
 /**

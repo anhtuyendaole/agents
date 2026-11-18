@@ -32,24 +32,35 @@ describe("a checkout after the repository's checks", () => {
 
 	it("R2: is not the commit when a file changed or appeared, and says which, twenty at most", async () => {
 		const some = recordingGit({ status: { output: " M src/cart.ts\n?? notes.txt\n" } });
-		expect(await changedSince(some.git, HEAD)).toBe(" M src/cart.ts\n?? notes.txt");
+		expect(await changedSince(some.git, HEAD)).toEqual({
+			changed: " M src/cart.ts\n?? notes.txt",
+		});
 		const lines = Array.from({ length: 25 }, (_, index) => `?? file-${index}.txt`);
 		const many = recordingGit({ status: { output: `${lines.join("\n")}\n` } });
-		expect(await changedSince(many.git, HEAD)).toBe(
-			[...lines.slice(0, 20), "and 5 more"].join("\n"),
-		);
+		expect(await changedSince(many.git, HEAD)).toEqual({
+			changed: [...lines.slice(0, 20), "and 5 more"].join("\n"),
+		});
 	});
 
-	it("R2: is not the commit when a new one was made meanwhile, or when git cannot say", async () => {
+	it("R2: is not the commit when a new one was made meanwhile", async () => {
 		const moved = recordingGit({ "rev-parse": { output: `${"f".repeat(40)}\n` } });
-		expect(await changedSince(moved.git, HEAD)).toBe("A new commit was made while the checks ran.");
+		expect(await changedSince(moved.git, HEAD)).toEqual({
+			changed: "A new commit was made while the checks ran.",
+		});
 		expect(moved.commands()).toEqual(["rev-parse HEAD"]);
+	});
+
+	it("R2: is neither the commit nor changed when git cannot say, and what git printed is not passed on", async () => {
 		const lost = recordingGit({
 			"rev-parse": { exitCode: 128, output: "fatal: not a git repository" },
 		});
-		expect(await changedSince(lost.git, HEAD)).toBe("The checkout's commit could not be read.");
+		expect(await changedSince(lost.git, HEAD)).toEqual({
+			unverified: "The checkout's commit could not be read.",
+		});
 		const unread = recordingGit({ status: { exitCode: 128, output: "fatal: index file corrupt" } });
-		expect(await changedSince(unread.git, HEAD)).toBe("The checkout's changes could not be read.");
+		expect(await changedSince(unread.git, HEAD)).toEqual({
+			unverified: "The checkout's changes could not be read.",
+		});
 	});
 });
 

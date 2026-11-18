@@ -20,9 +20,22 @@ import type { RunRecorder } from "./trace";
 /** The tool the trace names for a check, under the sandbox's name like its other commands. */
 export const CHECK_TOOL = "check";
 
-/** What runs a check: a sandbox's `run`. */
+/**
+ * Whether the checkout still is the commit the checks are for: it is (null); it is not, with
+ * what differs in git's words; or it could not be told, with why. The last two both fail a
+ * round, and are kept apart so that nothing says a check changed files when nobody saw it do so.
+ */
+export type Comparison = null | { changed: string } | { unverified: string };
+
+/** What runs a check: a sandbox's `run`, and its word on the checkout afterwards. */
 export interface CheckRunner {
 	run(command: string, cwd: string, timeoutSeconds: number): Promise<CommandResult>;
+	/**
+	 * Compares the checkout with the commit `head`. The checks run in the checkout, not on the
+	 * commit itself, so it is asked after each one that passed: a check that changes a file, as a
+	 * formatter does, would leave the next running on something that is not what gets pushed.
+	 */
+	changedSince(head: string): Promise<Comparison>;
 }
 
 /** How one check went. */
@@ -53,11 +66,13 @@ export interface CheckRound {
 	status: "passed" | "failed" | "not-run";
 	results: CheckResult[];
 	/**
-	 * What differed in the checkout from the commit once every check had passed, in git's words,
-	 * which fails the round: the checks ran in the checkout, so some ran on other files than the
-	 * commit's. For the model alone, since it names files. Left out when nothing differed.
+	 * What differed in the checkout from the commit after a check that exited with 0, in git's
+	 * words, which fails the round and stops it: the checks after it would have run on other
+	 * files than the commit's. For the model alone, since it names files.
 	 */
 	changed?: string;
+	/** Why the checkout could not be compared with the commit after a check, which fails the round too. */
+	unverified?: string;
 }
 
 /** What a run has spent on checks so far, across its calls of `open_pull_request`. */
@@ -67,6 +82,9 @@ export interface ChecksSpent {
 }
 
 const EARLIER_FAILED = "an earlier check did not pass";
+const EARLIER_CHANGED = "an earlier check left the repository's files different from the commit";
+const EARLIER_UNVERIFIED =
+	"it could not be told whether the repository's files were still the commit's";
 const CALL_TIME_USED = `the ${minutes(CHECK_LIMITS.callSeconds)} minutes one call has for checks were used up`;
 const RUN_TIME_USED = `the ${minutes(CHECK_LIMITS.runSeconds)} minutes a run has for checks were used up`;
 
@@ -80,15 +98,17 @@ export function checkPassed(result: CheckResult): boolean {
 }
 
 /**
- * Runs the commands in order in the repository's root and stops at the first that does not pass.
- * Each gets the time `CHECK_LIMITS` leaves it: its own limit, what is left of the call's, and what
- * is left of the run's, which `spent` carries from call to call. Each is a span in the run's
- * trace, with the size of its command and of its output, and why it did not pass. Throws when
- * `signal` gives up, as a turn that is stopped does.
+ * Runs the commands in order in the repository's root, on the checkout of the commit `head`, and
+ * stops at the first that does not pass, or that passes and leaves the checkout different from
+ * the commit. Each gets the time `CHECK_LIMITS` leaves it: its own limit, what is left of the
+ * call's, and what is left of the run's, which `spent` carries from call to call. Each is a span
+ * in the run's trace, with the size of its command and of its output, and why it did not pass.
+ * Throws when `signal` gives up, as a turn that is stopped does.
  */
 export async function runChecks(
 	commands: readonly string[],
 	sandbox: CheckRunner,
+	head: string,
 	run: RunRecorder,
 	spent: ChecksSpent,
 	{ now = Date.now, signal }: { now?: () => number; signal?: AbortSignal } = {},
@@ -97,6 +117,7 @@ export async function runChecks(
 	let callSeconds = 0;
 	let stopped: string | null = null;
 	let ran = false;
+	let off: Exclude<Comparison, null> | null = null;
 	for (const command of commands) {
 		// A turn that was stopped starts no further command; the one under way runs to its end.
 		signal?.throwIfAborted();
@@ -131,10 +152,26 @@ export async function runChecks(
 			outputBytes: answer === null ? 0 : byteLength(answer.output),
 			error: passed ? null : describeOutcome(result.outcome),
 		});
-		if (!passed) stopped = EARLIER_FAILED;
+		if (!passed) {
+			stopped = EARLIER_FAILED;
+			continue;
+		}
+		// After each check that passed, not only the last: one that changed a file which a later
+		// one puts back would leave the checkout looking like the commit at the end.
+		off = await compared(sandbox, head);
+		if (off !== null) stopped = "changed" in off ? EARLIER_CHANGED : EARLIER_UNVERIFIED;
 	}
 	if (!ran) return { status: "not-run", results };
-	return { status: stopped === null ? "passed" : "failed", results };
+	return { status: stopped === null ? "passed" : "failed", results, ...off };
+}
+
+/** The sandbox's word on the checkout; when it has none, that the two could not be compared. */
+async function compared(sandbox: CheckRunner, head: string): Promise<Comparison> {
+	try {
+		return await sandbox.changedSince(head);
+	} catch {
+		return { unverified: "The sandbox could not say whether the checkout is still the commit." };
+	}
 }
 
 function notRun(command: string, reason: string): CheckResult {
@@ -204,12 +241,19 @@ export function describeDraft(round: CheckRound): string {
 }
 
 /**
- * What the model is told of a round whose checks passed and left the checkout different from the
- * commit; null for any other round.
+ * What the model is told of a round that a check ended by exiting with 0 and leaving the checkout
+ * different from the commit, or impossible to compare with it; null for any other round.
  */
 function describeChanged(round: CheckRound): string | null {
-	if (round.changed === undefined) return null;
-	return `Every check exited with 0, but the repository's files are not the commit's any more, so the checks did not all run on what would be pushed. git status says:\n\n${round.changed}\n\nIf a check changes files on purpose, as a formatter that fixes them does, call the tool again: it commits what changed and checks that commit. If not, undo the changes first.`;
+	const last = round.results.findLast((result) => result.outcome.kind !== "not-run");
+	const which = last ? code(last.command) : "A check";
+	if (round.changed !== undefined) {
+		return `${which} exited with 0, but after it the repository's files were not the commit's any more, so the checks would not all have run on what gets pushed. git says:\n\n${round.changed}\n\nIf a check changes files on purpose, as a formatter that fixes them does, call the tool again: it commits what changed and checks that commit. If not, undo the changes first.`;
+	}
+	if (round.unverified !== undefined) {
+		return `${which} exited with 0, but whether the repository's files were still the commit's after it could not be told, so the round does not count as passed. ${round.unverified} Call the tool again.`;
+	}
+	return null;
 }
 
 function describeFailedCheck(result: CheckResult): string {
@@ -237,18 +281,26 @@ export function checksSection(round: CheckRound, head: string, draft: boolean): 
 	return section([
 		about,
 		lines.join("\n"),
-		round.changed === undefined ? null : CHANGED_LINE,
+		round.changed !== undefined
+			? CHANGED_LINE
+			: round.unverified !== undefined
+				? UNVERIFIED_LINE
+				: null,
 		draft ? draftLine(round) : null,
 		WRITTEN_BY,
 	]);
 }
 
 /**
- * What the section says of a round whose checks passed and changed the repository's files. Which
- * files is not said here: their names are the agent's to choose.
+ * What the section says of a round that a check ended by exiting with 0 and changing the
+ * repository's files. Which files is not said here: their names are the agent's to choose.
  */
 const CHANGED_LINE =
-	"Every check exited with 0, but the checks left the repository's files different from this commit, so they did not all run on it as it is. That counts as a failed round.";
+	"A check exited with 0 but left the repository's files different from this commit, so the checks did not all run on it as it is. That counts as a failed round.";
+
+/** The same for a round after which the checkout could not be compared with the commit. */
+const UNVERIFIED_LINE =
+	"A check exited with 0, but Gateweave could not make sure that the repository's files were still this commit's afterwards. That counts as a failed round.";
 
 /** The section of a pull request whose checks are set but had nowhere to run. */
 export function checksNotRunSection(reason: string): string {
@@ -423,15 +475,26 @@ export function withChecksSection(body: string, section: string): string {
  * would take in whatever follows, and the tool's section would be shown as code, or not shown
  * at all, under a body that claims what it likes.
  *
- * It closes more readily than a renderer would, since it does not know a fence inside a comment
- * from one outside: a closer too many leaves a stray line or shows the section as code, both in
- * plain sight, which is the side to err on.
+ * It is not a renderer, and where the two differ it closes once too often rather than once too
+ * seldom: a closer too many leaves a stray line or shows the section as code, both in plain
+ * sight, which is the side to err on.
  */
 function closed(body: string): string {
 	const closers: string[] = [];
 	// A fence is closed by a line of the same character, at least as long, with nothing after.
 	let fence: string | null = null;
+	// A comment that begins a line outside a fence runs to the line with its end mark, and a line
+	// of backticks inside it is the comment's own: closing it would open a fence after the comment.
+	let comment = false;
 	for (const line of body.split("\n")) {
+		if (comment) {
+			comment = !line.includes("-->");
+			continue;
+		}
+		if (fence === null && /^ {0,3}<!--/.test(line)) {
+			comment = !line.includes("-->", line.indexOf("<!--") + 4);
+			continue;
+		}
 		const marks = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
 		if (!marks) continue;
 		const [, run = "", rest = ""] = marks;

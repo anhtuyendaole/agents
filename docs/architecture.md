@@ -1280,13 +1280,16 @@ until their operator opts in. Cloud offers them only to the workspaces it invite
   exit with 0, then `RunnerSandbox.pushCommit`, which pushes that commit by its id and commits
   nothing, so what a check or anything else on the machine changed after the commit is not in
   the push. The calls of one turn take their turns: two at once would commit, check and push over
-  each other in the one checkout.
-  - The checks run in the checkout, not on the commit itself. So once they all passed, the tool
-    asks whether the checkout still is the commit (`changedSince` in `git-work.ts`: `HEAD`, and
-    `git status` without ignored files). If not, a check changed the files, as a formatter does,
-    and those after it ran on something else than what would be pushed: the round fails, and the
-    model is told which files; the pull request is not. Called again, the tool commits what
-    changed and checks that commit. What it cannot read counts as changed.
+  each other in the one checkout. One that waited while its turn was stopped does not begin.
+  - The checks run in the checkout, not on the commit itself. So after each check that passed,
+    the tool asks whether the checkout still is the commit (`changedSince` in `git-work.ts`:
+    `HEAD`, and `git status` without ignored files). After each and not only the last, since a
+    later check could put back what an earlier one changed. If it is not, a check changed the
+    files, as a formatter does, and the next would run on something else than what gets pushed:
+    the round stops and fails, and the model is told which files; the pull request is not.
+    Called again, the tool commits what changed and checks that commit. When git cannot say, the
+    round fails as well, as unverified and not as changed (`Comparison`), so nothing claims a
+    change nobody saw.
   - A round that fails pushes and opens nothing. The tool's failure is the model's to read: the
     command, its exit code and the last 4,000 bytes of its output. The trace gets the failure
     without the output (`SummarizedFailure`), since output is content. The third failed round of a

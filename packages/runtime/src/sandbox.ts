@@ -26,6 +26,7 @@ import {
 } from "@gateweave/agents-model";
 import { objectsIn } from "@gateweave/agents-registry";
 import type { CheckoutResult } from "./checkout";
+import type { Comparison } from "./checks";
 import { claudeCodeCommand } from "./claude-code";
 import { CODEX_SESSIONS, codexCommand } from "./codex";
 import { toolsRequest } from "./engine-tools";
@@ -344,11 +345,11 @@ export class RunnerSandbox
 	}
 
 	/**
-	 * What differs in the checkout from the commit `head`, or null when nothing does
-	 * (`changedSince` in `./git-work.ts`). `open_pull_request` asks after the repository's checks
-	 * passed, since they ran in the checkout and not on the commit itself.
+	 * Whether the checkout still is the commit `head` (`changedSince` in `./git-work.ts`).
+	 * `open_pull_request` asks after each of the repository's checks that passed, since they run
+	 * in the checkout and not on the commit itself.
 	 */
-	async changedSince(head: string): Promise<string | null> {
+	async changedSince(head: string): Promise<Comparison> {
 		return changedSince(this.#git(await this.#ready()), head);
 	}
 
@@ -365,12 +366,14 @@ export class RunnerSandbox
 		const pushed = this.ctx.storage.kv.get<string>(PUSHED_KEY) ?? null;
 		if (head === pushed) return { head, pushed: false };
 		// The window is for this commit alone: `SandboxOutbound` refuses the push of any other.
-		this.#push = { branch, from: pushed, head };
+		const window: PushWindow = { branch, from: pushed, head };
+		this.#push = window;
 		let result: CommandResult;
 		try {
 			result = await this.#git(container)(pushArguments(branch, head), PUSH_SECONDS);
 		} finally {
-			this.#push = null;
+			// Only its own: a push that outlives its turn must not close the window of the next.
+			if (this.#push === window) this.#push = null;
 		}
 		if (result.exitCode !== 0) {
 			if (/\[rejected\]|non-fast-forward|fetch first/.test(result.output)) {

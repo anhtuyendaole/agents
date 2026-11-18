@@ -79,12 +79,6 @@ export interface CheckPort extends CheckRunner {
 	/** Commits every change, unless there is none, and says which commit the work is at. */
 	commit(message: string, author: CommitAuthor): Promise<CommitResult>;
 	/**
-	 * What differs in the checkout from the commit `head`, in git's words, or null when nothing
-	 * does. Asked after the checks: they ran in the checkout, so a check that changed a file,
-	 * as a formatter does, left the ones after it running on something that is not the commit.
-	 */
-	changedSince(head: string): Promise<string | null>;
-	/**
 	 * Pushes `head` to `branch` and commits nothing: what a check, or anything else on the machine,
 	 * changed since the commit stays out of the push.
 	 */
@@ -187,10 +181,12 @@ export function pullRequestTools(options: PullRequestToolOptions): ToolSet {
 	): Promise<{ pushed: PushResult; round: CheckRound; head: string }> => {
 		const committed = await machine.commit(title, await author());
 		if ("error" in committed) throw new Error(committed.error);
-		const ran = await runChecks(commands, machine, run, spent, { now: checks?.now, signal });
+		const round = await runChecks(commands, machine, committed.head, run, spent, {
+			now: checks?.now,
+			signal,
+		});
 		// Checks take minutes, and a turn stopped meanwhile proposes nothing once they end.
 		signal?.throwIfAborted();
-		const round = ran.status === "passed" ? await onTheCommit(ran, machine, committed.head) : ran;
 		if (round.status === "failed") {
 			spent.failedRounds += 1;
 			if (spent.failedRounds < CHECK_LIMITS.failedRounds) {
@@ -217,7 +213,12 @@ export function pullRequestTools(options: PullRequestToolOptions): ToolSet {
 				.max(60_000)
 				.describe("What changed and why, and how it was checked, in Markdown"),
 		}),
-		execute: ({ title, body }, { abortSignal }) => inTurn(() => propose(title, body, abortSignal)),
+		execute: ({ title, body }, { abortSignal }) =>
+			inTurn(() => {
+				// A call that waited its turn while the turn was stopped does not begin.
+				abortSignal?.throwIfAborted();
+				return propose(title, body, abortSignal);
+			}),
 	});
 	const propose = async (
 		title: string,
@@ -281,22 +282,6 @@ export function pullRequestTools(options: PullRequestToolOptions): ToolSet {
 }
 
 /**
- * A round whose checks all passed, held to what it passed on: when the checkout is not the commit
- * any more, some check ran on other files than the commit's, and the round fails for it. When
- * the sandbox cannot say, the round fails too.
- */
-async function onTheCommit(round: CheckRound, machine: CheckPort, head: string) {
-	let changed: string | null;
-	try {
-		changed = await machine.changedSince(head);
-	} catch (error) {
-		console.error("A checkout was not compared with its commit", failureForLogs(error));
-		changed = "The sandbox could not say whether the checkout is still the commit.";
-	}
-	return changed === null ? round : { ...round, status: "failed" as const, changed };
-}
-
-/**
  * A round of checks that did not pass, and so opened nothing. Its message is the model's: it has
  * the end of the failed command's output. The trace gets `summary`, which has none of it.
  */
@@ -307,11 +292,15 @@ export class ChecksFailed extends Error implements SummarizedFailure {
 		super(message);
 		this.name = "ChecksFailed";
 		const failed = round.results.find((result) => !checkPassed(result));
-		const why = failed
-			? `. Check ${round.results.indexOf(failed) + 1}: ${describeOutcome(failed.outcome)}`
-			: round.changed === undefined
-				? ""
-				: ". They changed the repository's files, so they did not run on the commit";
+		// No file's name and no reason in git's words: those are for the model.
+		const why =
+			round.changed !== undefined
+				? ". A check changed the repository's files, so they would not all have run on the commit"
+				: round.unverified !== undefined
+					? ". Whether they ran on the commit could not be told"
+					: failed
+						? `. Check ${round.results.indexOf(failed) + 1}: ${describeOutcome(failed.outcome)}`
+						: "";
 		this.summary = `The repository's checks did not pass, so nothing was pushed${why}`;
 	}
 }

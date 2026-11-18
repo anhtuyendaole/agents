@@ -183,10 +183,11 @@ describe("a repository's checks", () => {
 		const { sandbox, proposed, call } = setup(["pnpm check", "pnpm test"]);
 		const outcome = await call();
 
-		// The checkout is compared with the commit once the checks passed, and that commit pushed.
+		// The checkout is compared with the commit after each check, and that commit is pushed.
 		expect(sandbox.log).toEqual([
 			"commit",
 			"run pnpm check",
+			"compare 1111111",
 			"run pnpm test",
 			"compare 1111111",
 			"push 1111111",
@@ -205,24 +206,30 @@ describe("a repository's checks", () => {
 		expect(proposed[0]?.draft).toBeUndefined();
 	});
 
-	it("R2: checks that pass but change the repository's files fail the round: they did not all run on the commit", async () => {
-		const { sandbox, proposed, spans, call, refused } = setup(["pnpm format", "pnpm test"]);
-		// The formatter rewrote a file, so the tests after it ran on that, not on the commit.
+	it("R2: a check that passes but changes the repository's files stops the round: the next would not run on the commit", async () => {
+		const { sandbox, proposed, spans, call, refused } = setup([
+			"pnpm format",
+			"pnpm test",
+			"git checkout .",
+		]);
+		// The formatter rewrote a file. The tests after it would run on that, not on the commit,
+		// and a last command that puts the file back would leave nothing to see at the end: so
+		// the checkout is compared after each check, and the round stops at the first difference.
 		const status = " M src/cart.ts\n?? src/cart.test.ts.snap";
-		sandbox.changes.push(status);
+		sandbox.changes.push({ changed: status });
 		const message = await refused();
-		expect(sandbox.log).toEqual(["commit", "run pnpm format", "run pnpm test", "compare 1111111"]);
+		expect(sandbox.log).toEqual(["commit", "run pnpm format", "compare 1111111"]);
 		expect(proposed).toEqual([]);
 		expect(message).toContain("nothing was pushed and no pull request was opened or updated");
 		expect(message).toContain(
-			"Every check exited with 0, but the repository's files are not the commit's any more",
+			"`pnpm format` exited with 0, but after it the repository's files were not the commit's any more",
 		);
 		expect(message).toContain(status);
 		expect(message).toContain("failed round 1 of 3");
 		// The trace says why without naming a file, which is the agent's to choose.
 		expect(spans[0]?.ended).toEqual({
 			error:
-				"The call failed: The repository's checks did not pass, so nothing was pushed. They changed the repository's files, so they did not run on the commit",
+				"The call failed: The repository's checks did not pass, so nothing was pushed. A check changed the repository's files, so they would not all have run on the commit",
 		});
 
 		// Called again, the tool commits what the formatter changed and checks that commit, which
@@ -233,16 +240,25 @@ describe("a repository's checks", () => {
 	});
 
 	it("R2: a round that keeps changing the files ends as a draft that says so, without a file's name", async () => {
-		const { sandbox, proposed, call, refused } = setup(["pnpm test"]);
+		const { sandbox, proposed, spans, call, refused } = setup(["pnpm format", "pnpm test"]);
 		const status = " M secret-plan.md";
-		// The second time the sandbox cannot say, which is taken as changed too.
-		sandbox.changes.push(status, new Error("The container is gone"), status);
-		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+		// The second time the sandbox cannot say. That fails the round too, and is not called a
+		// change: nobody saw one.
+		sandbox.changes.push({ changed: status }, new Error("The container is gone"), {
+			changed: status,
+		});
 		await refused();
-		expect(await refused()).toContain(
-			"The sandbox could not say whether the checkout is still the commit.",
+		const unverified = await refused();
+		expect(unverified).toContain(
+			"`pnpm format` exited with 0, but whether the repository's files were still the commit's after it could not be told, so the round does not count as passed. The sandbox could not say whether the checkout is still the commit. Call the tool again.",
 		);
-		logged.mockRestore();
+		expect(unverified).not.toContain("The container is gone");
+		expect(unverified).not.toContain("formatter that fixes them");
+		expect(spans.filter((span) => span.tool === "open_pull_request").at(-1)?.ended).toEqual({
+			error:
+				"The call failed: The repository's checks did not pass, so nothing was pushed. Whether they ran on the commit could not be told",
+		});
+
 		const outcome = await call();
 		expect(outcome).toMatchObject({ checks: "failed", draft: true });
 		expect(outcome.note).toContain(status);
@@ -250,12 +266,34 @@ describe("a repository's checks", () => {
 		expect(proposed[0]?.draft).toBe(true);
 		expect(proposed[0]?.body).toContain(
 			[
-				"- `pnpm test`: passed, exit code 0, 0.0 s",
-				"Every check exited with 0, but the checks left the repository's files different from this commit, so they did not all run on it as it is. That counts as a failed round.",
+				"- `pnpm format`: passed, exit code 0, 0.0 s\n- `pnpm test`: not run (an earlier check left the repository's files different from the commit)",
+				"A check exited with 0 but left the repository's files different from this commit, so the checks did not all run on it as it is. That counts as a failed round.",
 				"The checks failed in 3 rounds of this run, so Gateweave opens the pull request as a draft. One that was open already stays as it was.",
 			].join("\n\n"),
 		);
 		expect(proposed[0]?.body).not.toContain("secret-plan");
+	});
+
+	it("R2: a draft after rounds that could not be compared says that, and not that a check changed files", async () => {
+		const { sandbox, proposed, call, refused } = setup(["pnpm test", "pnpm build"]);
+		const lost = { unverified: "The checkout's changes could not be read." };
+		sandbox.changes.push(lost, lost, lost);
+		await refused();
+		await refused();
+		expect(await call()).toMatchObject({ checks: "failed", draft: true });
+		const body = proposed[0]?.body ?? "";
+		expect(body).toContain(
+			[
+				"- `pnpm test`: passed, exit code 0, 0.0 s\n- `pnpm build`: not run (it could not be told whether the repository's files were still the commit's)",
+				"A check exited with 0, but Gateweave could not make sure that the repository's files were still this commit's afterwards. That counts as a failed round.",
+			].join("\n\n"),
+		);
+		expect(body).not.toContain("left the repository's files different");
+		expect(sandbox.commands.map(({ command }) => command)).toEqual([
+			"pnpm test",
+			"pnpm test",
+			"pnpm test",
+		]);
 	});
 
 	it("R5: two calls at once take their turns, each with its own commit, checks and push", async () => {
@@ -284,6 +322,20 @@ describe("a repository's checks", () => {
 		expect(passed.status).toBe("fulfilled");
 	});
 
+	it("R5: a call that waited its turn while the turn was stopped does not begin, with checks or without", async () => {
+		for (const commands of [["pnpm test"], []]) {
+			const { sandbox, proposed, call } = setup(commands);
+			const turn = new AbortController();
+			const first = call({ title: "One", body: "First." });
+			const second = call({ title: "Two", body: "Second." }, turn.signal);
+			turn.abort();
+			await first;
+			await expect(second).rejects.toMatchObject({ name: "AbortError" });
+			expect(sandbox.commits.length + sandbox.pushes.length).toBe(1);
+			expect(proposed.map(({ title }) => title)).toEqual(["One"]);
+		}
+	});
+
 	it("R2: nothing is committed twice, pushed or opened when the commit itself fails", async () => {
 		const { sandbox, proposed, refused } = setup(["pnpm test"]);
 		sandbox.commitAnswers.push({
@@ -304,7 +356,7 @@ describe("a repository's checks", () => {
 			return run(...asked);
 		});
 		await expect(call(undefined, turn.signal)).rejects.toMatchObject({ name: "AbortError" });
-		expect(sandbox.log).toEqual(["commit", "run pnpm check"]);
+		expect(sandbox.log).toEqual(["commit", "run pnpm check", "compare 1111111"]);
 		expect(proposed).toEqual([]);
 		expect(spans[0]?.ended).toEqual({ error: "The turn was stopped" });
 
@@ -319,8 +371,21 @@ describe("a repository's checks", () => {
 		await expect(last.call(undefined, stopped.signal)).rejects.toMatchObject({
 			name: "AbortError",
 		});
-		expect(last.sandbox.log).toEqual(["commit", "run pnpm test"]);
+		expect(last.sandbox.log).toEqual(["commit", "run pnpm test", "compare 1111111"]);
 		expect(last.proposed).toEqual([]);
+
+		// Stopped while the checkout is compared after the last check: the same.
+		const compared = setup(["pnpm test"]);
+		const late = new AbortController();
+		vi.spyOn(compared.sandbox, "changedSince").mockImplementationOnce(async () => {
+			late.abort();
+			return null;
+		});
+		await expect(compared.call(undefined, late.signal)).rejects.toMatchObject({
+			name: "AbortError",
+		});
+		expect(compared.sandbox.commitPushes).toEqual([]);
+		expect(compared.proposed).toEqual([]);
 	});
 
 	it("R3: a failed check opens nothing and pushes nothing, and tells the model what failed", async () => {
@@ -538,9 +603,17 @@ describe("a repository's checks", () => {
 			"Done. <!-- a note --> And more.",
 			"<details><summary>Log</summary>\n\nok\n\n</details>",
 			"<?php echo 1; ?> and <![CDATA[x]]> and <!DOCTYPE html>",
+			// A line of backticks inside a comment is the comment's own: a closer after the comment
+			// would open a code block there, with the section in it.
+			"Done.\n\n<!--\n```\nnot shown\n-->\n\nMore.",
+			"<!-- one line ``` -->\n```\ncode\n```",
 		]) {
 			expect(after(whole), whole).toBe(whole);
 		}
+		// A fence opened after such a comment is a fence, and is closed.
+		expect(after("<!--\n```\n-->\n```js\nconst open = true;")).toBe(
+			"<!--\n```\n-->\n```js\nconst open = true;\n```",
+		);
 		// A comment, a processing instruction, CDATA or a declaration left open would take the
 		// section in, and a page shows nothing of what is inside one.
 		expect(after("All checks passed.\n\n<!--")).toBe("All checks passed.\n\n<!--\n-->");

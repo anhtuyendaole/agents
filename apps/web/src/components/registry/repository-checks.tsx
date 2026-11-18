@@ -3,7 +3,12 @@ import { type FormEvent, useId, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "#/components/ui/button";
 import { Textarea } from "#/components/ui/textarea";
-import { checksOfText, checksProblem } from "#/lib/repository-checks";
+import {
+	type ChecksDraft,
+	checksOfText,
+	checksProblem,
+	draftAfterRefresh,
+} from "#/lib/repository-checks";
 
 const MINUTES = CHECK_LIMITS.commandSeconds / 60;
 
@@ -32,8 +37,13 @@ export function RepositoryChecks({
 }) {
 	const id = useId();
 	const saved = checks.join("\n");
-	const [text, setText] = useState(saved);
+	const [draft, setDraft] = useState<ChecksDraft>({ text: saved, base: saved });
 	const [pending, setPending] = useState(false);
+	// The saved list can change under the form: a save of this form's own, someone else's, or a
+	// refresh of the page. A draft without edits follows it; one with edits stays, and says so.
+	const { text, base, stale } = draftAfterRefresh(draft, saved);
+	if (base !== draft.base) setDraft({ text, base });
+	const setText = (next: string) => setDraft({ text: next, base });
 	const problem = checksProblem(text);
 	const changed = checksOfText(text).join("\n") !== saved;
 
@@ -44,7 +54,7 @@ export function RepositoryChecks({
 		try {
 			const next = checksOfText(text);
 			await onSave(next);
-			setText(next.join("\n"));
+			setDraft({ text: next.join("\n"), base: next.join("\n") });
 			toast.success(next.length === 0 ? "Checks removed" : "Checks saved");
 		} catch (error) {
 			toast.error("Could not save the checks", {
@@ -96,6 +106,19 @@ export function RepositoryChecks({
 						{problem ??
 							`One command to a line, at most ${CHECK_LIMITS.commands}, each run with bash in the repository's root. Leave it empty for no checks.`}
 					</p>
+					{stale && (
+						<p role="status" className="text-xs text-muted-foreground">
+							The saved checks changed while you were editing. Saving replaces them with what is
+							here.{" "}
+							<button
+								type="button"
+								className="underline underline-offset-2"
+								onClick={() => setDraft({ text: saved, base: saved })}
+							>
+								Show the saved checks instead
+							</button>
+						</p>
+					)}
 					<Button type="submit" size="sm" disabled={pending || problem !== null || !changed}>
 						{pending ? "Saving checks…" : "Save checks"}
 					</Button>

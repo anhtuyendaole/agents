@@ -134,10 +134,10 @@ exit code, running out of time, or the sandbox failing to run it.
 - All pass: the commit that was checked is pushed, and the pull request is opened or updated.
 - One fails: nothing is pushed and nothing is opened. The agent is told which command failed, its
   exit code and the end of its output (the last 4,000 bytes), fixes the work and calls again.
-- All pass, but the repository's files are not the commit's any more, because a check changed
-  them, as a formatter that fixes files does: that fails the round too, since the checks after it
-  did not run on what would be pushed. Called again, Gateweave commits what changed and checks
-  that commit. Files git ignores, such as what a build leaves behind, do not count.
+- One passes, but leaves the repository's files different from the commit, as a formatter that
+  fixes files does: that stops and fails the round too, since the checks after it would not run
+  on what gets pushed. Gateweave looks after each check. Called again, it commits what changed
+  and checks that commit. Files git ignores, such as what a build leaves behind, do not count.
 - After 3 failed rounds in one run, the work is pushed as it is and the pull request is opened as
   a draft. The run is not failed for that. A pull request that was open already stays as it was:
   GitHub lets an app open a draft, not turn an open pull request into one.
