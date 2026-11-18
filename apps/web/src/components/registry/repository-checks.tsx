@@ -1,0 +1,114 @@
+import { CHECK_LIMITS } from "@gateweave/agents-model";
+import { type FormEvent, useId, useState } from "react";
+import { toast } from "sonner";
+import { Button } from "#/components/ui/button";
+import { Textarea } from "#/components/ui/textarea";
+import { checksOfText, checksProblem } from "#/lib/repository-checks";
+
+const MINUTES = CHECK_LIMITS.commandSeconds / 60;
+
+/** Each command with a key of its own: the same command may be listed twice. */
+function keyed(checks: string[]): { key: string; command: string }[] {
+	const seen = new Map<string, number>();
+	return checks.map((command) => {
+		const nth = (seen.get(command) ?? 0) + 1;
+		seen.set(command, nth);
+		return { key: `${nth}:${command}`, command };
+	});
+}
+
+/**
+ * A repository's checks (AGT-142): the commands `open_pull_request` runs on an agent's work before
+ * it pushes it. Every member sees them; owners and admins set them, one to a line.
+ */
+export function RepositoryChecks({
+	checks,
+	admin,
+	onSave,
+}: {
+	checks: string[];
+	admin: boolean;
+	onSave: (checks: string[]) => Promise<void>;
+}) {
+	const id = useId();
+	const saved = checks.join("\n");
+	const [text, setText] = useState(saved);
+	const [pending, setPending] = useState(false);
+	const problem = checksProblem(text);
+	const changed = checksOfText(text).join("\n") !== saved;
+
+	async function onSubmit(event: FormEvent) {
+		event.preventDefault();
+		if (problem !== null) return;
+		setPending(true);
+		try {
+			const next = checksOfText(text);
+			await onSave(next);
+			setText(next.join("\n"));
+			toast.success(next.length === 0 ? "Checks removed" : "Checks saved");
+		} catch (error) {
+			toast.error("Could not save the checks", {
+				description: error instanceof Error ? error.message : undefined,
+			});
+		} finally {
+			setPending(false);
+		}
+	}
+
+	return (
+		<section aria-labelledby={`${id}-heading`} className="space-y-3">
+			<h2 id={`${id}-heading`} className="text-sm font-medium">
+				Checks before a pull request
+			</h2>
+			<p id={`${id}-about`} className="text-sm text-muted-foreground">
+				When an agent proposes its work on this repository, Gateweave runs these commands in the
+				agent's sandbox on the work as committed, in order, before anything is pushed. If one fails,
+				no pull request is opened and the agent is told what failed; after{" "}
+				{CHECK_LIMITS.failedRounds} failed rounds in one run the pull request is opened as a draft.
+				The pull request ends with a section, written by Gateweave, that lists each command, its
+				exit code and how long it took. Each command may run for {MINUTES} minutes.
+			</p>
+			{admin ? (
+				<form onSubmit={onSubmit} className="space-y-2">
+					<Textarea
+						aria-labelledby={`${id}-heading`}
+						aria-describedby={`${id}-about ${id}-hint`}
+						aria-invalid={problem !== null}
+						value={text}
+						onChange={(event) => setText(event.target.value)}
+						placeholder={"pnpm check\npnpm typecheck\npnpm test"}
+						// One line more than a repository can have, so a line too many is seen, not scrolled to.
+						rows={Math.max(3, Math.min(CHECK_LIMITS.commands + 1, text.split("\n").length))}
+						spellCheck={false}
+						className="font-mono"
+					/>
+					<p
+						id={`${id}-hint`}
+						role={problem === null ? undefined : "alert"}
+						className={
+							problem === null ? "text-xs text-muted-foreground" : "text-xs text-destructive"
+						}
+					>
+						{problem ??
+							`One command to a line, at most ${CHECK_LIMITS.commands}, each run with bash in the repository's root. Leave it empty for no checks.`}
+					</p>
+					<Button type="submit" size="sm" disabled={pending || problem !== null || !changed}>
+						Save checks
+					</Button>
+				</form>
+			) : checks.length === 0 ? (
+				<p className="text-sm text-muted-foreground">
+					None are set. An owner or admin of the workspace can set them.
+				</p>
+			) : (
+				<ol className="divide-y rounded-lg border font-mono text-sm">
+					{keyed(checks).map(({ key, command }) => (
+						<li key={key} className="break-all p-3">
+							{command}
+						</li>
+					))}
+				</ol>
+			)}
+		</section>
+	);
+}

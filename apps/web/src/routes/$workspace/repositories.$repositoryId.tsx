@@ -11,12 +11,13 @@ import {
 	repositoryUrl,
 	ScanStatus,
 } from "#/components/registry/labels";
+import { RepositoryChecks } from "#/components/registry/repository-checks";
 import { Button } from "#/components/ui/button";
 import { isAdmin, useMyRole, useWorkspace } from "#/components/workspace/context";
 import { Notice } from "#/components/workspace/notice";
 import { formatDateTime, formatRelative } from "#/lib/dates";
 import { useRefreshWhile } from "#/lib/refresh";
-import { getRepository, scanRepository } from "#/lib/registry";
+import { getRepository, scanRepository, setRepositoryChecks } from "#/lib/registry";
 import { useDocumentTitle } from "#/lib/title";
 
 export const Route = createFileRoute("/$workspace/repositories/$repositoryId")({
@@ -171,6 +172,9 @@ function RepositoryPage() {
 				</section>
 			)}
 
+			{/* Sandboxes check out GitHub repositories only, so only theirs have work to check. */}
+			{repository.provider === "github" && <Checks />}
+
 			{applied.length > 0 && <AppliedSetups />}
 			{applications.length > 0 && <Applications />}
 
@@ -190,6 +194,27 @@ function RepositoryPage() {
 				</section>
 			)}
 		</div>
+	);
+}
+
+/** The repository's checks, which owners and admins set here. */
+function Checks() {
+	const router = useRouter();
+	const { workspace, repositoryId } = Route.useParams();
+	const admin = isAdmin(useMyRole());
+	const detail = Route.useLoaderData();
+	if (!detail) return null;
+	return (
+		<RepositoryChecks
+			// The form starts over from what the registry holds, after a save and after a reload.
+			key={detail.repository.checks.join("\n")}
+			checks={detail.repository.checks}
+			admin={admin}
+			onSave={async (checks) => {
+				await setRepositoryChecks({ data: { slug: workspace, repositoryId, checks } });
+				await router.invalidate();
+			}}
+		/>
 	);
 }
 

@@ -105,6 +105,18 @@ describe("audit events in words", () => {
 		expect(
 			say({ action: "project.deleted", target: { type: "project", id: "p-1", label: null } }),
 		).toBe("deleted the project (no name)");
+		// R1: the log says which commands run on an agent's work from now on, and when none do.
+		const checksOf = { type: "repository" as const, id: "r-1", label: "acme/api" };
+		expect(
+			say({
+				action: "repository.checksSet",
+				target: checksOf,
+				detail: { checks: ["pnpm check", "pnpm test"] },
+			}),
+		).toBe("set the checks of acme/api to pnpm check and pnpm test");
+		expect(say({ action: "repository.checksSet", target: checksOf, detail: { checks: [] } })).toBe(
+			"removed the checks of acme/api",
+		);
 		expect(
 			say({
 				action: "track.connected",

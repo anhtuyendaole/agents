@@ -109,6 +109,56 @@ If the repository has a Track GitHub connection, the pull request links to the i
 since its title names the issue and its description ends with `Fixes <key>`: merging it moves the
 issue to Done.
 
+## Checks before a pull request
+
+The agent's instructions tell it to run the project's checks, which leaves it to the model. A
+repository can also have checks of its own, which Gateweave runs itself before a pull request
+exists.
+
+**To set them**, open the repository under **Repositories** and fill in **Checks before a pull
+request**: one command to a line, such as `pnpm check`, `pnpm typecheck` and `pnpm test`. Only an
+owner or admin of the workspace can, and the audit log keeps who set which commands. A repository
+has at most 5 checks, each one line of at most 300 characters. Leave the field empty for no
+checks: a repository without any works exactly as before, and its pull requests say nothing about
+checks.
+
+**What happens.** When the agent calls `open_pull_request`, Gateweave commits the work, then runs
+each command with bash in the repository's root, in the agent's sandbox, in order, and stops at
+the first that fails. A command passes when it exits with code 0. Anything else fails: another
+exit code, running out of time, or the sandbox failing to run it.
+
+- All pass: the commit that was checked is pushed, and the pull request is opened or updated.
+- One fails: nothing is pushed and nothing is opened. The agent is told which command failed, its
+  exit code and the end of its output (the last 4,000 bytes), fixes the work and calls again.
+- After 3 failed rounds in one run, the work is pushed as it is and the pull request is opened as
+  a draft. The run is not failed for that. A pull request that was open already stays as it was:
+  GitHub lets an app open a draft, not turn an open pull request into one.
+
+**What the pull request says.** Its description ends with a section headed **Checks run by
+Gateweave**: each command, whether it passed, its exit code and how long it took, and the commit
+they ran on. Gateweave writes that section, not the agent. Nothing of a command's output is in
+it, and if the agent writes a section under the same heading, Gateweave takes it out before it
+adds its own. A check that was not started says `not run`, with the reason: an earlier check did
+not pass, or the time for checks was used up.
+
+**Limits.** Each command may run for 10 minutes. The checks of one `open_pull_request` call may
+run for 20 minutes together, and those of one run for 40. A command that runs out of time is
+reported as timed out, never as passed. When a run has used its 40 minutes, further checks are
+not run and the pull request says so, as a draft. The time counts as the run's sandbox time, as
+any command's does, and each check is a step in the run's trace under **Runs**, with its duration
+and why it failed.
+
+**Where the commands come from.** Only from the repository's page in Agents, read each time the
+agent proposes its work. Not from a file in the repository, not from the agent's working tree,
+not from an issue's text: an agent cannot change what its own work is held to, and neither can
+whoever writes an issue. Reading them from a file on the default branch is not supported yet.
+
+The same holds for every engine: Claude Code, Codex and OpenCode open their pull requests with
+the same tool, so their work is checked the same way.
+
+The checks run on the agent's own machine. They tell a reviewer what ran there before the push;
+they are a first line in front of your repository's CI, not a replacement for it.
+
 ## Costs and limits
 
 Each assigned issue is one run, on your workspace's provider key, with a sandbox for up to an hour,

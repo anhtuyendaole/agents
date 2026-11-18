@@ -201,6 +201,12 @@ export function auditSentence(event: AuditEvent, people: People): string {
 				? `updated the pull request applying the setup ${label} to ${repository}`
 				: `opened a pull request applying the setup ${label} to ${repository}`;
 		}
+		case "repository.checksSet": {
+			const checks = Array.isArray(detail.checks) ? detail.checks : [];
+			return checks.length === 0
+				? `removed the checks of ${label}`
+				: `set the checks of ${label} to ${list(checks)}`;
+		}
 		case "project.deleted":
 			return `deleted the project ${label}`;
 		case "library.removed":
