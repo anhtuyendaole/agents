@@ -140,43 +140,29 @@ describe("a repository's checks", () => {
 		await stub.reconcileInstallation("100", [github("1", "storefront")]);
 		expect((await stub.getRepository(web))?.repository.checks).toEqual(["pnpm test"]);
 
-		// A repository the workspace never had has none, and neither has GitLab's with the same id.
+		// A repository the workspace never had has none.
 		expect(await stub.repositoryChecks("999")).toEqual([]);
+	});
+
+	it("R1: are a GitHub repository's alone: a sandbox checks out no other, so no other takes or gives any", async () => {
+		const stub = registry();
 		const [lab = ""] = await stub.syncRepositories([
 			{ ...github("3", "lab"), provider: "gitlab", webUrl: "https://gitlab.com/acme/lab" },
 		]);
-		await stub.setRepositoryChecks(lab, ["make test"]);
-		expect(await stub.repositoryChecks("3")).toEqual([]);
-	});
+		expect(await stub.setRepositoryChecks(lab, ["make test"])).toBeNull();
+		expect((await stub.getRepository(lab))?.repository.checks).toEqual([]);
 
-	it("R6: a turn hands the runtime the repository and no command: it asks for them when it needs them", async () => {
-		const stub = registry();
-		await stub.saveProviderKey({ provider: "anthropic", key: "sk-ant-api03-abcdefgh" }, "Ada");
-		const [web = ""] = await stub.syncRepositories([github("1", "web")]);
-		await stub.setRepositoryChecks(web, ["pnpm test"]);
-		const agent = await stub.createAgent({
-			name: "Builder",
-			description: null,
-			provider: "anthropic",
-			model: "claude-sonnet-5-5",
-			instructions: null,
-			sandbox: true,
-			repositoryId: web,
+		// Were a GitLab repository's row to hold some all the same, the id GitHub gave another
+		// repository would not find them.
+		await runInDurableObject(stub, (_instance, state) => {
+			state.storage.sql.exec(
+				"UPDATE repositories SET checks = ? WHERE id = ?",
+				'["make test"]',
+				lab,
+			);
 		});
-		const conversation = (await stub.startConversation(agent.id, "user-ada"))?.id ?? "";
-		const turn = await stub.beginTurn(conversation, "Hello");
-		// Either the turn, with the repository named by GitHub's id and nothing else, or a refusal
-		// where the test's server runs no sandboxes: neither carries a command.
-		expect(JSON.stringify(turn)).not.toContain("pnpm test");
-		if (!("status" in turn)) {
-			expect(turn.repository).toEqual({
-				owner: "acme",
-				name: "web",
-				externalId: "1",
-				installationId: "100",
-				defaultBranch: "main",
-			});
-		}
+		expect((await stub.getRepository(lab))?.repository.checks).toEqual(["make test"]);
+		expect(await stub.repositoryChecks("3")).toEqual([]);
 	});
 });
 

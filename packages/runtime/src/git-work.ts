@@ -74,6 +74,31 @@ export async function commitWork(
 	return { head };
 }
 
+/** Most changed files `changedSince` names; the rest are counted. */
+const CHANGED_SHOWN = 20;
+
+/**
+ * What differs in the checkout from the commit `head`, in git's words, for the model to read; null
+ * when nothing does. The repository's checks ran in this checkout, so a difference after them
+ * means that some of them ran on files that are not the commit's: a formatter that fixed a file,
+ * a snapshot a test rewrote, or a command the agent left running. Files git ignores do not count:
+ * what a build leaves behind is not the work.
+ *
+ * It says that something changed whenever it cannot tell, so that what it cannot read is never
+ * taken for a clean checkout.
+ */
+export async function changedSince(git: Git, head: string): Promise<string | null> {
+	const at = await git(["rev-parse", "HEAD"]);
+	if (at.exitCode !== 0) return "The checkout's commit could not be read.";
+	if (at.output.trim() !== head) return "A new commit was made while the checks ran.";
+	const status = await git(["status", "--porcelain", "--untracked-files=all"]);
+	if (status.exitCode !== 0) return "The checkout's changes could not be read.";
+	const changed = status.output.split("\n").filter((line) => line.trim() !== "");
+	if (changed.length === 0) return null;
+	const more = changed.length - CHANGED_SHOWN;
+	return [...changed.slice(0, CHANGED_SHOWN), ...(more > 0 ? [`and ${more} more`] : [])].join("\n");
+}
+
 /**
  * The arguments of the push of the commit `head` to `branch`. It names the commit and not `HEAD`,
  * so a commit made in the checkout after `commitWork`, while the repository's checks ran, is not

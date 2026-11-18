@@ -200,18 +200,22 @@ function RepositoryPage() {
 /** The repository's checks, which owners and admins set here. */
 function Checks() {
 	const router = useRouter();
-	const { workspace, repositoryId } = Route.useParams();
+	const { workspace } = Route.useParams();
 	const admin = isAdmin(useMyRole());
 	const detail = Route.useLoaderData();
 	if (!detail) return null;
+	// The repository whose checks are shown is the one a save writes to, whatever the address
+	// says by the time it is sent.
+	const { id: repositoryId, checks } = detail.repository;
 	return (
 		<RepositoryChecks
-			// The form starts over from what the registry holds, after a save and after a reload.
-			key={detail.repository.checks.join("\n")}
-			checks={detail.repository.checks}
+			// The form starts over from what the registry holds: after a save, after a reload, and
+			// when the page goes on to another repository, whose checks may read the same.
+			key={`${repositoryId}\n${checks.join("\n")}`}
+			checks={checks}
 			admin={admin}
-			onSave={async (checks) => {
-				await setRepositoryChecks({ data: { slug: workspace, repositoryId, checks } });
+			onSave={async (next) => {
+				await setRepositoryChecks({ data: { slug: workspace, repositoryId, checks: next } });
 				await router.invalidate();
 			}}
 		/>

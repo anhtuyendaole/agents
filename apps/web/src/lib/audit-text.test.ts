@@ -105,17 +105,23 @@ describe("audit events in words", () => {
 		expect(
 			say({ action: "project.deleted", target: { type: "project", id: "p-1", label: null } }),
 		).toBe("deleted the project (no name)");
-		// R1: the log says which commands run on an agent's work from now on, and when none do.
-		const checksOf = { type: "repository" as const, id: "r-1", label: "acme/api" };
-		expect(
+		// R1: the log says that a repository's checks were set, changed or removed, and how many
+		// there are, never a command: a command is free text, and may hold what it should not.
+		const checks = (detail: AuditEvent["detail"]) =>
 			say({
 				action: "repository.checksSet",
-				target: checksOf,
-				detail: { checks: ["pnpm check", "pnpm test"] },
-			}),
-		).toBe("set the checks of acme/api to pnpm check and pnpm test");
-		expect(say({ action: "repository.checksSet", target: checksOf, detail: { checks: [] } })).toBe(
-			"removed the checks of acme/api",
+				target: { type: "repository", id: "r-1", label: "acme/api" },
+				detail,
+			});
+		expect(checks({ checks: 2, before: 0 })).toBe("set 2 checks on acme/api");
+		expect(checks({ checks: 1, before: 0 })).toBe("set 1 check on acme/api");
+		expect(checks({ checks: 3, before: 2 })).toBe(
+			"changed the checks of acme/api, which has 3 checks now",
+		);
+		expect(checks({ checks: 0, before: 2 })).toBe("removed the checks of acme/api");
+		// An entry that held the commands themselves would not be read out.
+		expect(checks({ checks: ["curl -H 'Authorization: Bearer abc' example.com"] })).toBe(
+			"changed the checks of acme/api",
 		);
 		expect(
 			say({

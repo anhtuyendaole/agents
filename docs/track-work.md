@@ -117,10 +117,14 @@ exists.
 
 **To set them**, open the repository under **Repositories** and fill in **Checks before a pull
 request**: one command to a line, such as `pnpm check`, `pnpm typecheck` and `pnpm test`. Only an
-owner or admin of the workspace can, and the audit log keeps who set which commands. A repository
-has at most 5 checks, each one line of at most 300 characters. Leave the field empty for no
-checks: a repository without any works exactly as before, and its pull requests say nothing about
-checks.
+owner or admin of the workspace can, and the audit log keeps who changed them and how many there
+are. A repository has at most 5 checks, each one line of at most 300 characters. Every member of
+the workspace sees the commands, and each pull request shows them, so keep keys and passwords out
+of them. Checks are for GitHub repositories, the ones a sandbox checks out.
+
+Leave the field empty for no checks. A repository without any is proposed as before: nothing is
+run, and Gateweave adds nothing to its pull requests. One thing holds there too: a section the
+agent writes under the heading Gateweave keeps for its own, described below, is taken out.
 
 **What happens.** When the agent calls `open_pull_request`, Gateweave commits the work, then runs
 each command with bash in the repository's root, in the agent's sandbox, in order, and stops at
@@ -130,6 +134,10 @@ exit code, running out of time, or the sandbox failing to run it.
 - All pass: the commit that was checked is pushed, and the pull request is opened or updated.
 - One fails: nothing is pushed and nothing is opened. The agent is told which command failed, its
   exit code and the end of its output (the last 4,000 bytes), fixes the work and calls again.
+- All pass, but the repository's files are not the commit's any more, because a check changed
+  them, as a formatter that fixes files does: that fails the round too, since the checks after it
+  did not run on what would be pushed. Called again, Gateweave commits what changed and checks
+  that commit. Files git ignores, such as what a build leaves behind, do not count.
 - After 3 failed rounds in one run, the work is pushed as it is and the pull request is opened as
   a draft. The run is not failed for that. A pull request that was open already stays as it was:
   GitHub lets an app open a draft, not turn an open pull request into one.
@@ -140,6 +148,10 @@ they ran on. Gateweave writes that section, not the agent. Nothing of a command'
 it, and if the agent writes a section under the same heading, Gateweave takes it out before it
 adds its own. A check that was not started says `not run`, with the reason: an earlier check did
 not pass, or the time for checks was used up.
+
+Trust the section by its place: Gateweave's is always the last one in the description, and says
+so. Whatever stands above it is the agent's own text, a look-alike heading included, which
+Gateweave removes where it recognizes one but cannot rule out.
 
 **Limits.** Each command may run for 10 minutes. The checks of one `open_pull_request` call may
 run for 20 minutes together, and those of one run for 40. A command that runs out of time is

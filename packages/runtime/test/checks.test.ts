@@ -23,7 +23,7 @@ const AUTHOR = { name: "Builder", email: "noreply@gateweave.com" };
 
 /** The sentence every section the tool writes ends with. */
 const WRITTEN_BY =
-	"The commands are set on the repository's page in Gateweave Agents. Gateweave wrote this section, not the agent.";
+	"The commands are set on the repository's page in Gateweave Agents. Gateweave wrote this section, not the agent: it is always the last one, and what stands above it is the agent's.";
 
 const passed = (seconds = 0): CommandAnswer => ({
 	exitCode: 0,
@@ -183,7 +183,14 @@ describe("a repository's checks", () => {
 		const { sandbox, proposed, call } = setup(["pnpm check", "pnpm test"]);
 		const outcome = await call();
 
-		expect(sandbox.log).toEqual(["commit", "run pnpm check", "run pnpm test", "push 1111111"]);
+		// The checkout is compared with the commit once the checks passed, and that commit pushed.
+		expect(sandbox.log).toEqual([
+			"commit",
+			"run pnpm check",
+			"run pnpm test",
+			"compare 1111111",
+			"push 1111111",
+		]);
 		expect(sandbox.commits).toEqual([{ message: "Fix the cart", author: AUTHOR }]);
 		expect(sandbox.commands).toEqual([
 			{ command: "pnpm check", cwd: "/workspace/repo", timeoutSeconds: 600 },
@@ -196,6 +203,85 @@ describe("a repository's checks", () => {
 		expect(outcome.draft).toBe(false);
 		expect(proposed).toHaveLength(1);
 		expect(proposed[0]?.draft).toBeUndefined();
+	});
+
+	it("R2: checks that pass but change the repository's files fail the round: they did not all run on the commit", async () => {
+		const { sandbox, proposed, spans, call, refused } = setup(["pnpm format", "pnpm test"]);
+		// The formatter rewrote a file, so the tests after it ran on that, not on the commit.
+		const status = " M src/cart.ts\n?? src/cart.test.ts.snap";
+		sandbox.changes.push(status);
+		const message = await refused();
+		expect(sandbox.log).toEqual(["commit", "run pnpm format", "run pnpm test", "compare 1111111"]);
+		expect(proposed).toEqual([]);
+		expect(message).toContain("nothing was pushed and no pull request was opened or updated");
+		expect(message).toContain(
+			"Every check exited with 0, but the repository's files are not the commit's any more",
+		);
+		expect(message).toContain(status);
+		expect(message).toContain("failed round 1 of 3");
+		// The trace says why without naming a file, which is the agent's to choose.
+		expect(spans[0]?.ended).toEqual({
+			error:
+				"The call failed: The repository's checks did not pass, so nothing was pushed. They changed the repository's files, so they did not run on the commit",
+		});
+
+		// Called again, the tool commits what the formatter changed and checks that commit, which
+		// the checks then leave as it is.
+		expect(await call()).toMatchObject({ checks: "passed", draft: false, head: "2".repeat(40) });
+		expect(sandbox.commitPushes).toEqual([{ branch: BRANCH, head: "2".repeat(40) }]);
+		expect(proposed[0]?.body).not.toContain("different from this commit");
+	});
+
+	it("R2: a round that keeps changing the files ends as a draft that says so, without a file's name", async () => {
+		const { sandbox, proposed, call, refused } = setup(["pnpm test"]);
+		const status = " M secret-plan.md";
+		// The second time the sandbox cannot say, which is taken as changed too.
+		sandbox.changes.push(status, new Error("The container is gone"), status);
+		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+		await refused();
+		expect(await refused()).toContain(
+			"The sandbox could not say whether the checkout is still the commit.",
+		);
+		logged.mockRestore();
+		const outcome = await call();
+		expect(outcome).toMatchObject({ checks: "failed", draft: true });
+		expect(outcome.note).toContain(status);
+		expect(proposed).toHaveLength(1);
+		expect(proposed[0]?.draft).toBe(true);
+		expect(proposed[0]?.body).toContain(
+			[
+				"- `pnpm test`: passed, exit code 0, 0.0 s",
+				"Every check exited with 0, but the checks left the repository's files different from this commit, so they did not all run on it as it is. That counts as a failed round.",
+				"The checks failed in 3 rounds of this run, so Gateweave opens the pull request as a draft. One that was open already stays as it was.",
+			].join("\n\n"),
+		);
+		expect(proposed[0]?.body).not.toContain("secret-plan");
+	});
+
+	it("R5: two calls at once take their turns, each with its own commit, checks and push", async () => {
+		const { sandbox, proposed, call } = setup(["pnpm test"]);
+		const [first, second] = await Promise.all([
+			call({ title: "One", body: "First." }),
+			call({ title: "Two", body: "Second." }),
+		]);
+		expect(sandbox.log).toEqual([
+			"commit",
+			"run pnpm test",
+			"compare 1111111",
+			"push 1111111",
+			"commit",
+			"run pnpm test",
+			"compare 2222222",
+			"push 2222222",
+		]);
+		expect([first.head, second.head]).toEqual(["1".repeat(40), "2".repeat(40)]);
+		expect(proposed.map(({ title }) => title)).toEqual(["One", "Two"]);
+
+		// One that fails does not hold up the next.
+		sandbox.answers.push({ exitCode: 1, output: "red", timedOut: false });
+		const [failed, passed] = await Promise.allSettled([call(), call()]);
+		expect(failed.status).toBe("rejected");
+		expect(passed.status).toBe("fulfilled");
 	});
 
 	it("R2: nothing is committed twice, pushed or opened when the commit itself fails", async () => {
@@ -418,6 +504,80 @@ describe("a repository's checks", () => {
 		expect(body.endsWith(WRITTEN_BY)).toBe(true);
 	});
 
+	it("R4: reads a body made to be slow to read once, not once for each mark in it", () => {
+		// Each of these costs a pattern that starts over at every mark the square of its length. At
+		// this size that is ten seconds and more for one of them, in the conversation's own object;
+		// read once, all of them together take well under one. They are larger than a body the tool
+		// accepts, so that the two cannot be mistaken on a busy machine.
+		const hostile = [
+			`${"<".repeat(100_000)}${">".repeat(100_000)}`,
+			"](".repeat(100_000),
+			`${"<!a".repeat(66_000)}>`,
+			"&#".repeat(100_000),
+		];
+		const started = Date.now();
+		for (const body of hostile) {
+			expect(withoutChecksSection(body)).toBe(body);
+			expect(withChecksSection(body, "## Checks run by Gateweave").startsWith(body)).toBe(true);
+		}
+		expect(Date.now() - started).toBeLessThan(5_000);
+	});
+
+	it("R4: what the model leaves open is closed before the tool's section, so the section is neither hidden nor shown as code", () => {
+		const section = "## Checks run by Gateweave\n\nx";
+		const after = (body: string) => {
+			const whole = withChecksSection(body, section);
+			expect(whole.endsWith(`\n\n${section}`), body).toBe(true);
+			return whole.slice(0, -section.length - 2);
+		};
+		// A body that leaves nothing open is followed by the section and nothing else.
+		for (const whole of [
+			"Done.",
+			"```sh\npnpm test\n```",
+			"~~~\n```\n~~~",
+			"Done. <!-- a note --> And more.",
+			"<details><summary>Log</summary>\n\nok\n\n</details>",
+			"<?php echo 1; ?> and <![CDATA[x]]> and <!DOCTYPE html>",
+		]) {
+			expect(after(whole), whole).toBe(whole);
+		}
+		// A comment, a processing instruction, CDATA or a declaration left open would take the
+		// section in, and a page shows nothing of what is inside one.
+		expect(after("All checks passed.\n\n<!--")).toBe("All checks passed.\n\n<!--\n-->");
+		expect(after("<!-- one --> and <!-- two")).toBe("<!-- one --> and <!-- two\n-->");
+		expect(after("Passed.\n\n<?")).toBe("Passed.\n\n<?\n?>");
+		expect(after("Passed.\n\n<![CDATA[")).toBe("Passed.\n\n<![CDATA[\n]]>");
+		expect(after("Passed.\n\n<!DOCTYPE")).toBe("Passed.\n\n<!DOCTYPE\n>");
+		// A folded block left open would fold the section away.
+		expect(after("<details><summary>Checks passed</summary>")).toBe(
+			"<details><summary>Checks passed</summary>\n</details>",
+		);
+		expect(after("<DETAILS open>\n<details>\n</details>\n<details >")).toBe(
+			"<DETAILS open>\n<details>\n</details>\n<details >\n</details>\n</details>",
+		);
+		// A code block left open would show the section as part of the model's code.
+		expect(after("Passed:\n\n```")).toBe("Passed:\n\n```\n```");
+		expect(after("````md\n```\nstill open")).toBe("````md\n```\nstill open\n````");
+		expect(after("   ~~~~ text\n~~~\n")).toBe("   ~~~~ text\n~~~\n~~~~");
+		// Several at once: each gets its closer.
+		expect(after("```\n<!--\n<details>")).toBe("```\n<!--\n<details>\n```\n-->\n</details>");
+	});
+
+	it("R4: a copy the tool does not recognize still stands above the tool's section, which is the last and says so", async () => {
+		// A Cyrillic letter that looks like the Latin one: no folding makes the two the same.
+		const lookalike = `## ${String.fromCodePoint(0x0421)}hecks run by Gateweave`;
+		const { proposed, call } = setup(["pnpm test"]);
+		await call({
+			title: "T",
+			body: `Done.\n\n${lookalike}\n\n- \`pnpm test\`: passed, exit code 0, 1.0 s\n\n## After\n\nMore.`,
+		});
+		const body = proposed[0]?.body ?? "";
+		const headings = body.split("\n").filter((each) => each.startsWith("## "));
+		expect(headings).toEqual([lookalike, "## After", "## Checks run by Gateweave"]);
+		expect(body.endsWith(WRITTEN_BY)).toBe(true);
+		expect(WRITTEN_BY).toContain("it is always the last one");
+	});
+
 	it("R4: the heading is the tool's however the model dresses it, and without checks too", async () => {
 		for (const heading of [
 			"# Checks run by Gateweave",
@@ -429,13 +589,24 @@ describe("a repository's checks", () => {
 			// a full-width letter that reads as the plain one.
 			`Checks${String.fromCodePoint(0x200b)} run by Gateweave\n=======================`,
 			`## ${String.fromCodePoint(0xff23)}hecks run by Gateweave`,
+			// What a page shows as those words without their being in the text as such: a tag that
+			// is left when another is taken out, character references, and a link.
+			"<<b>h2>Checks run by Gateweave<</b>/h2>",
+			"## &#67;hecks&nbsp;run&#x20;by &#x47;ateweave",
+			"## [Checks run by Gateweave](https://example.com/checks)",
+			"## [Checks run by Gateweave][checks]",
 		]) {
 			const body = `Summary.\n\n${heading}\n\n- \`pnpm test\`: passed, exit code 0, 1.0 s\n`;
 			expect(withoutChecksSection(body), heading).toBe("Summary.");
 		}
-		// A sentence that only mentions the words is the model's own, and stays.
-		const mention = "The Checks run by Gateweave section below says what ran.";
-		expect(withoutChecksSection(mention)).toBe(mention);
+		// A sentence that only mentions the words is the model's own, and stays; so does text with
+		// tags, links and references that do not come to the heading.
+		for (const mention of [
+			"The Checks run by Gateweave section below says what ran.",
+			"## Checks run by <b>hand</b>, see [the log](https://example.com) &amp; &#35;12 &#xfffffff;",
+		]) {
+			expect(withoutChecksSection(mention)).toBe(mention);
+		}
 		expect(withChecksSection("", "## Checks run by Gateweave\n\nx")).toBe(
 			"## Checks run by Gateweave\n\nx",
 		);

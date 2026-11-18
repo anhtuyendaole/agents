@@ -15,7 +15,10 @@ export interface ChecksSet {
 	checks: string[];
 }
 
-/** Gives a repository exactly these checks. Null when the workspace has no such repository. */
+/**
+ * Gives a repository exactly these checks. Null when the workspace has no such repository on
+ * GitHub: a sandbox checks out no other, so another's checks would be kept and never run.
+ */
 export function setRepositoryChecks(
 	db: Db,
 	repositoryId: string,
@@ -25,7 +28,13 @@ export function setRepositoryChecks(
 	const found = db
 		.select({ owner: repositories.owner, name: repositories.name, checks: repositories.checks })
 		.from(repositories)
-		.where(and(eq(repositories.id, repositoryId), isNull(repositories.removedAt)))
+		.where(
+			and(
+				eq(repositories.id, repositoryId),
+				eq(repositories.provider, "github"),
+				isNull(repositories.removedAt),
+			),
+		)
 		.get();
 	if (!found) return null;
 	db.update(repositories)

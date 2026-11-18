@@ -202,10 +202,14 @@ export function auditSentence(event: AuditEvent, people: People): string {
 				: `opened a pull request applying the setup ${label} to ${repository}`;
 		}
 		case "repository.checksSet": {
-			const checks = Array.isArray(detail.checks) ? detail.checks : [];
-			return checks.length === 0
-				? `removed the checks of ${label}`
-				: `set the checks of ${label} to ${list(checks)}`;
+			// How many, never which: a command is free text, and the log keeps none.
+			const checks = typeof detail.checks === "number" ? detail.checks : null;
+			if (checks === 0) return `removed the checks of ${label}`;
+			if (checks === null) return `changed the checks of ${label}`;
+			const now = `${checks} ${checks === 1 ? "check" : "checks"}`;
+			return detail.before === 0
+				? `set ${now} on ${label}`
+				: `changed the checks of ${label}, which has ${now} now`;
 		}
 		case "project.deleted":
 			return `deleted the project ${label}`;

@@ -107,24 +107,49 @@ it("R1: only an owner or admin sets a repository's checks; a member and a strang
 	expect(removed.failed, removed.text).toBe(true);
 	expect(await registry.repositoryChecks("7")).toEqual(["pnpm test"]);
 
-	// The log keeps who set which commands. Saving the same list again is no change.
+	// The log keeps who changed them and how many there were, and no command: a command is free
+	// text, which the log holds none of. Saving the same list again is no change.
 	const same = await setChecks(admin, slug, repositoryId, ["pnpm test"]);
 	expect(same.failed, same.text).toBe(false);
-	expect(await auditOf(workspaceId)).toEqual([
+	const entries = await auditOf(workspaceId);
+	expect(entries).toEqual([
 		{
 			by: owner.userId,
 			action: "repository.checksSet",
 			target: `repository:${repositoryId}:acme/site`,
-			detail: { checks: ["pnpm check", "pnpm test"] },
+			detail: { checks: 2, before: 0 },
 		},
 		{
 			by: admin.userId,
 			action: "repository.checksSet",
 			target: `repository:${repositoryId}:acme/site`,
-			detail: { checks: ["pnpm test"] },
+			detail: { checks: 1, before: 2 },
 		},
 	]);
+	expect(JSON.stringify(entries)).not.toContain("pnpm");
 	expect(agents.logs.filter((log) => log.level === "error")).toEqual([]);
+});
+
+it("R1: sets checks on GitHub repositories only: a sandbox checks out no other", async () => {
+	const slug = "checks-gitlab";
+	const { owner, workspaceId, registry } = await workspace(slug);
+	const [lab = ""] = await registry.syncRepositories([
+		{
+			provider: "gitlab",
+			externalId: "3",
+			installationId: "connection-1",
+			owner: "acme",
+			name: "lab",
+			webUrl: "https://gitlab.com/acme/lab",
+			defaultBranch: "main",
+			private: true,
+		},
+	]);
+	const refused = await setChecks(owner, slug, lab, ["make test"]);
+	expect(refused.failed, refused.text).toBe(true);
+	expect(refused.text).toContain("Repository not found");
+	expect((await registry.getRepository(lab))?.repository.checks).toEqual([]);
+	expect(await auditOf(workspaceId)).toEqual([]);
 });
 
 it("R1: refuses a command that is too long or more than one line, and more than five, for an owner too", async () => {

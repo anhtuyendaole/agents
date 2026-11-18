@@ -1279,7 +1279,14 @@ until their operator opts in. Cloud offers them only to the workspaces it invite
   repository's root with the sandbox's own `run`, in order, stopping at the first that does not
   exit with 0, then `RunnerSandbox.pushCommit`, which pushes that commit by its id and commits
   nothing, so what a check or anything else on the machine changed after the commit is not in
-  the push.
+  the push. The calls of one turn take their turns: two at once would commit, check and push over
+  each other in the one checkout.
+  - The checks run in the checkout, not on the commit itself. So once they all passed, the tool
+    asks whether the checkout still is the commit (`changedSince` in `git-work.ts`: `HEAD`, and
+    `git status` without ignored files). If not, a check changed the files, as a formatter does,
+    and those after it ran on something else than what would be pushed: the round fails, and the
+    model is told which files; the pull request is not. Called again, the tool commits what
+    changed and checks that commit. What it cannot read counts as changed.
   - A round that fails pushes and opens nothing. The tool's failure is the model's to read: the
     command, its exit code and the last 4,000 bytes of its output. The trace gets the failure
     without the output (`SummarizedFailure`), since output is content. The third failed round of a
@@ -1289,8 +1296,14 @@ until their operator opts in. Cloud offers them only to the workspaces it invite
   - The body ends with a section the tool writes (`checksSection`): each command, its exit code
     and duration, and the commit. Its heading (`CHECKS_HEADING`) is the tool's: a line of the
     model's body that is the heading, however it is marked up, is removed with what follows it up
-    to the next heading, whether the repository has checks or not. Nothing of a command's output
-    goes into the body.
+    to the next heading, whether the repository has checks or not. That removal is by the line's
+    letters, without its tags, links and character references (`withoutChecksSection`); it is not
+    a Markdown renderer, and a heading made to look the same in some other way gets past it. So
+    the guarantee is the section's place, which the section states: the tool's is appended after
+    everything the model wrote, and is the last one. For that to hold on the page, what the body
+    left open is closed first (`closed`): a code fence, an HTML comment, processing instruction,
+    CDATA or declaration, and a `<details>`, each of which would otherwise take the section in
+    and show it as code or not at all. Nothing of a command's output goes into the body.
   - A command gets 10 minutes, a call's checks 20 and a run's 40, counted where the tools are made
     for the turn. A command stopped at its limit is timed out, never passed. Checks a call has no
     time left for fail the round; when the run has none left before a round begins, the checks
@@ -1301,10 +1314,11 @@ until their operator opts in. Cloud offers them only to the workspaces it invite
   - **The commands are configuration, not content.** The runtime asks the registry for them at
     each call, by the id GitHub gave the repository the turn began with (`repositoryChecks`). The
     turn carries none, the tool's input has no place for one, and no file of the working tree is
-    read for them. Only `setRepositoryChecks` writes them, which the app calls for an owner or
-    admin and notes in the audit log (`repository.checksSet`); a scan never does. When the
-    registry cannot be asked, the tool opens nothing. Reading them from a file on the default
-    branch is not built.
+    read for them. Only `setRepositoryChecks` writes them, for a GitHub repository, which the app
+    calls for an owner or admin and notes in the audit log (`repository.checksSet`, with how many
+    there were and are, never the commands, which are free text); a scan never does. They are no
+    secret: every member sees them and each pull request lists them. When the registry cannot be
+    asked, the tool opens nothing. Reading them from a file on the default branch is not built.
   - An engine in the sandbox opens its pull request with the same tool, served to its CLI
     (`./engine-tools.ts`), so Claude Code's, Codex's and OpenCode's work is checked the same way.
     A turn that works on files without a sandbox (AGT-122, dark) has nowhere to run a command:
@@ -1319,10 +1333,14 @@ until their operator opts in. Cloud offers them only to the workspaces it invite
   - more than one ref, or any ref but the conversation's branch;
   - deleting the branch;
   - an update from a commit other than the one the conversation last pushed, so commits someone
-    else pushed are never dropped.
+    else pushed are never dropped;
+  - an update to any commit but the one the window was opened for (AGT-142), which is the commit
+    the repository's checks ran on when it has any.
 
   A push it cannot read, encoded or over 50 MB, is refused too. A command the agent runs can never
-  push, even while the window is open, to anything but that branch.
+  push, even while the window is open, to anything but that branch, nor anything there but the
+  commit the tool itself is pushing: a `git push` left running in the sandbox to catch the window
+  gets no unchecked commit through it.
 - **Claude Code** (AGT-44). The image installs Anthropic's Claude Code CLI, pinned
   (`CLAUDE_CODE_VERSION` in `sandbox/Dockerfile`). A turn of an agent whose engine is
   `claude-code` checks the repository out first, if the agent has one, then runs `claude -p` there

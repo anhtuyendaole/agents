@@ -40,7 +40,7 @@ import {
 	type SandboxEngine,
 	TIMED_OUT_STATUS,
 } from "./engines";
-import { commitWork, type Git, isCommitId, pushArguments } from "./git-work";
+import { changedSince, commitWork, type Git, isCommitId, pushArguments } from "./git-work";
 import type { LocalCommand, LocalServerPort } from "./local-servers";
 import type { EngineMeter } from "./meter";
 import { readAtMost, sendModelRequest } from "./model-requests";
@@ -344,6 +344,15 @@ export class RunnerSandbox
 	}
 
 	/**
+	 * What differs in the checkout from the commit `head`, or null when nothing does
+	 * (`changedSince` in `./git-work.ts`). `open_pull_request` asks after the repository's checks
+	 * passed, since they ran in the checkout and not on the commit itself.
+	 */
+	async changedSince(head: string): Promise<string | null> {
+		return changedSince(this.#git(await this.#ready()), head);
+	}
+
+	/**
 	 * The second half of `push`: pushes the commit `head` to `branch`, unless the branch has it
 	 * already, and commits nothing. It names the commit and not `HEAD`, so what changed in the
 	 * checkout after `commit`, while the repository's checks ran, is not in the push.
@@ -355,7 +364,8 @@ export class RunnerSandbox
 		const container = await this.#ready();
 		const pushed = this.ctx.storage.kv.get<string>(PUSHED_KEY) ?? null;
 		if (head === pushed) return { head, pushed: false };
-		this.#push = { branch, from: pushed };
+		// The window is for this commit alone: `SandboxOutbound` refuses the push of any other.
+		this.#push = { branch, from: pushed, head };
 		let result: CommandResult;
 		try {
 			result = await this.#git(container)(pushArguments(branch, head), PUSH_SECONDS);

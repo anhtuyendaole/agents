@@ -69,6 +69,11 @@ export class MemorySandbox implements CheckoutPort, PushPort, CheckPort {
 	/** What the next commits answer, in order; then each makes a new commit. */
 	readonly commitAnswers: CommitResult[] = [];
 	readonly commitPushes: CommitPush[] = [];
+	/**
+	 * What the checkout differs in from its commit the next times it is asked, in git's words;
+	 * then, and for a null, nothing. An error is thrown, as a sandbox that cannot say throws.
+	 */
+	readonly changes: (string | null | Error)[] = [];
 	/** A clock for the tests that time commands: each command moves it by its `seconds`. */
 	clock = 1_000_000;
 	/** What was asked of it that changes or runs something, in order. */
@@ -90,6 +95,13 @@ export class MemorySandbox implements CheckoutPort, PushPort, CheckPort {
 		this.log.push("commit");
 		const head = String(this.commits.length).repeat(40).slice(0, 40);
 		return this.commitAnswers.shift() ?? { head };
+	}
+
+	async changedSince(head: string): Promise<string | null> {
+		this.log.push(`compare ${head.slice(0, 7)}`);
+		const answer = this.changes.shift() ?? null;
+		if (answer instanceof Error) throw answer;
+		return answer;
 	}
 
 	async pushCommit(branch: string, head: string): Promise<PushResult> {
@@ -267,8 +279,17 @@ export class FakeSandbox
 		return this.#memory.commit(message, author);
 	}
 
+	changedSince(head: string) {
+		return this.#memory.changedSince(head);
+	}
+
 	pushCommit(branch: string, head: string) {
 		return this.#memory.pushCommit(branch, head);
+	}
+
+	/** What the checkout differs in from its commit the next times it is asked. */
+	answerChanges(changes: (string | null)[]): void {
+		this.#memory.changes.push(...changes);
 	}
 
 	/** What the next commands answer, in order: for a test that fails the repository's checks. */

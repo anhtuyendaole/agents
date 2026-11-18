@@ -79,6 +79,12 @@ export interface CheckPort extends CheckRunner {
 	/** Commits every change, unless there is none, and says which commit the work is at. */
 	commit(message: string, author: CommitAuthor): Promise<CommitResult>;
 	/**
+	 * What differs in the checkout from the commit `head`, in git's words, or null when nothing
+	 * does. Asked after the checks: they ran in the checkout, so a check that changed a file,
+	 * as a formatter does, left the ones after it running on something that is not the commit.
+	 */
+	changedSince(head: string): Promise<string | null>;
+	/**
 	 * Pushes `head` to `branch` and commits nothing: what a check, or anything else on the machine,
 	 * changed since the commit stays out of the push.
 	 */
@@ -161,6 +167,14 @@ export function pullRequestTools(options: PullRequestToolOptions): ToolSet {
 	const name = `${repository.owner}/${repository.name}`;
 	// The tools are made once for a turn, which is one run: what its calls spent adds up here.
 	const spent: ChecksSpent = { failedRounds: 0, seconds: 0 };
+	// One call at a time. A model can make two at once, which would commit, check and push over
+	// each other in the one checkout, and each count the run's time for checks from the same start.
+	let last: Promise<unknown> = Promise.resolve();
+	const inTurn = <T>(work: () => Promise<T>): Promise<T> => {
+		const mine = last.then(work, work);
+		last = mine.catch(() => {});
+		return mine;
+	};
 	/**
 	 * Commits, runs the checks on the commit, and pushes it. A round that fails throws before the
 	 * push, until the run's last allowed failure, which pushes the work for a draft.
@@ -173,9 +187,10 @@ export function pullRequestTools(options: PullRequestToolOptions): ToolSet {
 	): Promise<{ pushed: PushResult; round: CheckRound; head: string }> => {
 		const committed = await machine.commit(title, await author());
 		if ("error" in committed) throw new Error(committed.error);
-		const round = await runChecks(commands, machine, run, spent, { now: checks?.now, signal });
+		const ran = await runChecks(commands, machine, run, spent, { now: checks?.now, signal });
 		// Checks take minutes, and a turn stopped meanwhile proposes nothing once they end.
 		signal?.throwIfAborted();
+		const round = ran.status === "passed" ? await onTheCommit(ran, machine, committed.head) : ran;
 		if (round.status === "failed") {
 			spent.failedRounds += 1;
 			if (spent.failedRounds < CHECK_LIMITS.failedRounds) {
@@ -202,62 +217,83 @@ export function pullRequestTools(options: PullRequestToolOptions): ToolSet {
 				.max(60_000)
 				.describe("What changed and why, and how it was checked, in Markdown"),
 		}),
-		execute: async ({ title, body }, { abortSignal }): Promise<PullRequestOutcome> => {
-			const problem = await ready();
-			if (problem !== null) throw new Error(problem);
-			const commands = checks ? await currentChecks(checks) : [];
-			let pushed: PushResult;
-			// What the tool adds to the body and to its answer; nothing when no checks are set.
-			let section: string | null = null;
-			let about: Pick<PullRequestOutcome, "checks" | "draft" | "note"> = {};
-			if (commands.length === 0) {
-				pushed = await sandbox.push(branch, title, await author());
-			} else if (!checks?.sandbox) {
-				pushed = await sandbox.push(branch, title, await author());
-				section = checksNotRunSection(NO_SANDBOX);
-				about = { checks: "not run", draft: false };
-			} else {
-				const checked = await checkAndPush(commands, checks.sandbox, title, abortSignal);
-				pushed = checked.pushed;
-				const { status } = checked.round;
-				const draft = status !== "passed";
-				section = checksSection(checked.round, checked.head, draft);
-				about = {
-					checks: status === "not-run" ? "not run" : status,
-					draft,
-					...(draft ? { note: describeDraft(checked.round) } : {}),
-				};
-			}
-			if ("error" in pushed) throw new Error(pushed.error);
-			// The model's own copy of the section goes whether checks are set or not: the heading is
-			// the tool's, and a reader takes what stands under it as the tool's word.
-			const written =
-				section === null ? withoutChecksSection(body) : withChecksSection(body, section);
-			let made: Awaited<ReturnType<PullRequestPort["propose"]>>;
-			try {
-				made = await github.propose({
-					branch,
-					title,
-					body: written,
-					...(about.draft ? { draft: true } : {}),
-				});
-			} catch (error) {
-				console.error("A pull request was not made", failureForLogs(error));
-				throw new Error(describeGitHubFailure(error, name, branch));
-			}
-			const outcome: PullRequestOutcome = {
-				repository: name,
-				...made,
-				head: pushed.head,
-				...about,
-			};
-			await record(outcome);
-			return outcome;
-		},
+		execute: ({ title, body }, { abortSignal }) => inTurn(() => propose(title, body, abortSignal)),
 	});
+	const propose = async (
+		title: string,
+		body: string,
+		abortSignal: AbortSignal | undefined,
+	): Promise<PullRequestOutcome> => {
+		const problem = await ready();
+		if (problem !== null) throw new Error(problem);
+		const commands = checks ? await currentChecks(checks) : [];
+		let pushed: PushResult;
+		// What the tool adds to the body and to its answer; nothing when no checks are set.
+		let section: string | null = null;
+		let about: Pick<PullRequestOutcome, "checks" | "draft" | "note"> = {};
+		if (commands.length === 0) {
+			pushed = await sandbox.push(branch, title, await author());
+		} else if (!checks?.sandbox) {
+			pushed = await sandbox.push(branch, title, await author());
+			section = checksNotRunSection(NO_SANDBOX);
+			about = { checks: "not run", draft: false };
+		} else {
+			const checked = await checkAndPush(commands, checks.sandbox, title, abortSignal);
+			pushed = checked.pushed;
+			const { status } = checked.round;
+			const draft = status !== "passed";
+			section = checksSection(checked.round, checked.head, draft);
+			about = {
+				checks: status === "not-run" ? "not run" : status,
+				draft,
+				...(draft ? { note: describeDraft(checked.round) } : {}),
+			};
+		}
+		if ("error" in pushed) throw new Error(pushed.error);
+		// The model's own copy of the section goes whether checks are set or not: the heading is
+		// the tool's, and a reader takes what stands under it as the tool's word.
+		const written =
+			section === null ? withoutChecksSection(body) : withChecksSection(body, section);
+		let made: Awaited<ReturnType<PullRequestPort["propose"]>>;
+		try {
+			made = await github.propose({
+				branch,
+				title,
+				body: written,
+				...(about.draft ? { draft: true } : {}),
+			});
+		} catch (error) {
+			console.error("A pull request was not made", failureForLogs(error));
+			throw new Error(describeGitHubFailure(error, name, branch));
+		}
+		const outcome: PullRequestOutcome = {
+			repository: name,
+			...made,
+			head: pushed.head,
+			...about,
+		};
+		await record(outcome);
+		return outcome;
+	};
 	return {
 		[PULL_REQUEST_TOOL]: traced(open, SANDBOX_SERVER, PULL_REQUEST_TOOL, run, { showErrors: true }),
 	};
+}
+
+/**
+ * A round whose checks all passed, held to what it passed on: when the checkout is not the commit
+ * any more, some check ran on other files than the commit's, and the round fails for it. When
+ * the sandbox cannot say, the round fails too.
+ */
+async function onTheCommit(round: CheckRound, machine: CheckPort, head: string) {
+	let changed: string | null;
+	try {
+		changed = await machine.changedSince(head);
+	} catch (error) {
+		console.error("A checkout was not compared with its commit", failureForLogs(error));
+		changed = "The sandbox could not say whether the checkout is still the commit.";
+	}
+	return changed === null ? round : { ...round, status: "failed" as const, changed };
 }
 
 /**
@@ -271,11 +307,12 @@ export class ChecksFailed extends Error implements SummarizedFailure {
 		super(message);
 		this.name = "ChecksFailed";
 		const failed = round.results.find((result) => !checkPassed(result));
-		this.summary = `The repository's checks did not pass, so nothing was pushed${
-			failed
-				? `. Check ${round.results.indexOf(failed) + 1}: ${describeOutcome(failed.outcome)}`
-				: ""
-		}`;
+		const why = failed
+			? `. Check ${round.results.indexOf(failed) + 1}: ${describeOutcome(failed.outcome)}`
+			: round.changed === undefined
+				? ""
+				: ". They changed the repository's files, so they did not run on the commit";
+		this.summary = `The repository's checks did not pass, so nothing was pushed${why}`;
 	}
 }
 

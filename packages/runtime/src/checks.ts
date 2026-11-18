@@ -52,6 +52,12 @@ export interface CheckResult {
 export interface CheckRound {
 	status: "passed" | "failed" | "not-run";
 	results: CheckResult[];
+	/**
+	 * What differed in the checkout from the commit once every check had passed, in git's words,
+	 * which fails the round: the checks ran in the checkout, so some ran on other files than the
+	 * commit's. For the model alone, since it names files. Left out when nothing differed.
+	 */
+	changed?: string;
 }
 
 /** What a run has spent on checks so far, across its calls of `open_pull_request`. */
@@ -174,7 +180,7 @@ export function describeFailedRound(round: CheckRound, spent: ChecksSpent): stri
 	const left = CHECK_LIMITS.failedRounds - spent.failedRounds;
 	return [
 		"The repository's checks did not pass, so nothing was pushed and no pull request was opened or updated. Your work is committed in the sandbox.",
-		failed ? describeFailedCheck(failed) : describeNotRun(round),
+		failed ? describeFailedCheck(failed) : (describeChanged(round) ?? describeNotRun(round)),
 		`Fix what failed and call the tool again. This was failed round ${spent.failedRounds} of ${CHECK_LIMITS.failedRounds} in this run: ${
 			left === 1
 				? "if the next one fails too, the pull request is opened as a draft that says which check failed."
@@ -193,8 +199,17 @@ export function describeDraft(round: CheckRound): string {
 	);
 	return [
 		`The repository's checks failed in ${CHECK_LIMITS.failedRounds} rounds of this run, so the work was pushed as it is. The pull request says which check failed, and a new one is opened as a draft.`,
-		failed ? describeFailedCheck(failed) : describeNotRun(round),
+		failed ? describeFailedCheck(failed) : (describeChanged(round) ?? describeNotRun(round)),
 	].join("\n\n");
+}
+
+/**
+ * What the model is told of a round whose checks passed and left the checkout different from the
+ * commit; null for any other round.
+ */
+function describeChanged(round: CheckRound): string | null {
+	if (round.changed === undefined) return null;
+	return `Every check exited with 0, but the repository's files are not the commit's any more, so the checks did not all run on what would be pushed. git status says:\n\n${round.changed}\n\nIf a check changes files on purpose, as a formatter that fixes them does, call the tool again: it commits what changed and checks that commit. If not, undo the changes first.`;
 }
 
 function describeFailedCheck(result: CheckResult): string {
@@ -222,18 +237,30 @@ export function checksSection(round: CheckRound, head: string, draft: boolean): 
 	return section([
 		about,
 		lines.join("\n"),
+		round.changed === undefined ? null : CHANGED_LINE,
 		draft ? draftLine(round) : null,
-		"The commands are set on the repository's page in Gateweave Agents. Gateweave wrote this section, not the agent.",
+		WRITTEN_BY,
 	]);
 }
 
+/**
+ * What the section says of a round whose checks passed and changed the repository's files. Which
+ * files is not said here: their names are the agent's to choose.
+ */
+const CHANGED_LINE =
+	"Every check exited with 0, but the checks left the repository's files different from this commit, so they did not all run on it as it is. That counts as a failed round.";
+
 /** The section of a pull request whose checks are set but had nowhere to run. */
 export function checksNotRunSection(reason: string): string {
-	return section([
-		`Checks: not run (${reason}).`,
-		"The commands are set on the repository's page in Gateweave Agents. Gateweave wrote this section, not the agent.",
-	]);
+	return section([`Checks: not run (${reason}).`, WRITTEN_BY]);
 }
+
+/**
+ * How every section ends. It says where the section stands, since that is what a reader can
+ * rely on: the tool appends it after everything the model wrote, whatever the model wrote.
+ */
+const WRITTEN_BY =
+	"The commands are set on the repository's page in Gateweave Agents. Gateweave wrote this section, not the agent: it is always the last one, and what stands above it is the agent's.";
 
 /** Why a turn that works on files without a sandbox runs no checks. */
 export const NO_SANDBOX = "no sandbox in this run";
@@ -281,8 +308,13 @@ function code(command: string): string {
 /**
  * The model's body without any section under the tool's heading, so the only one a reader finds
  * is the one the tool wrote. A line counts as the heading by its letters alone, whatever marks it
- * up: `#` signs, emphasis, a quote, HTML tags, a colon, another case. The section goes from there
- * to the next `#` heading, or to the end. A body without the heading comes back as it is.
+ * up: `#` signs, emphasis, a quote, HTML tags, a link, character references, a colon, another
+ * case. The section goes from there to the next `#` heading, or to the end. A body without the
+ * heading comes back as it is.
+ *
+ * This takes out the copies a model is likely to write, not every string a page would show as
+ * those words: that would take a Markdown renderer. What holds whatever the model wrote is the
+ * section's place, which the section states: the tool's is the last one.
  */
 export function withoutChecksSection(body: string): string {
 	const kept: string[] = [];
@@ -300,26 +332,139 @@ export function withoutChecksSection(body: string): string {
 	return removed ? kept.join("\n").trimEnd() : body;
 }
 
-const PLAIN_HEADING = plain(CHECKS_HEADING);
-
 function isChecksHeading(text: string): boolean {
 	return plain(text) === PLAIN_HEADING;
 }
 
-/** A line's letters and digits, in lower case, without its HTML tags: its words and no more. */
+/** A line's letters and digits as a page shows them, in lower case: its words and no more. */
 function plain(text: string): string {
-	return text
-		.replace(/<[^>]*>/g, "")
+	return shown(text)
 		.normalize("NFKC")
 		.replace(/[^\p{L}\p{N}]/gu, "")
 		.toLowerCase();
 }
 
+/**
+ * A line without what a page does not show of it: its HTML tags, the target of a link, and
+ * character references, a numbered one as the character it stands for. It is not a renderer:
+ * it only keeps the ways of writing the heading's words that come to mind from getting past
+ * `withoutChecksSection`, which is why the tool's section also says that it comes last.
+ */
+function shown(text: string): string {
+	return withoutLinkTargets(withoutTags(text)).replace(
+		/&#(\d{1,7});|&#[xX]([0-9a-fA-F]{1,6});|&[A-Za-z][A-Za-z0-9]{1,31};/g,
+		(_reference, decimal?: string, hex?: string) => {
+			// A named reference is a space, a mark or a letter of another alphabet: never one of
+			// the heading's own, so it is dropped as any mark is.
+			if (decimal === undefined && hex === undefined) return "";
+			const code = decimal === undefined ? Number.parseInt(hex ?? "", 16) : Number(decimal);
+			const character = code <= 0x10ffff && (code < 0xd800 || code > 0xdfff);
+			return character ? String.fromCodePoint(code) : "";
+		},
+	);
+}
+
+/**
+ * `text` without the targets of its Markdown links, which follow a link's text as `](…)` or
+ * `][…]`. Read once from left to right, like `withoutTags`: a body can be made of thousands of
+ * openers and no closer.
+ */
+function withoutLinkTargets(text: string): string {
+	let kept = "";
+	let at = 0;
+	// Once a closer is looked for and not found, there is none further on either.
+	const none = { ")": false, "]": false };
+	for (let next = text.indexOf("]"); next !== -1; next = text.indexOf("]", at)) {
+		const after = text[next + 1];
+		const closer = after === "(" ? ")" : after === "[" ? "]" : null;
+		const end = closer === null || none[closer] ? -1 : text.indexOf(closer, next + 2);
+		if (closer !== null && end === -1) none[closer] = true;
+		// With a target, the text up to the `]` stays and the target goes; without, the `]` stays.
+		kept += text.slice(at, end === -1 ? next + 1 : next);
+		at = end === -1 ? next + 1 : end + 1;
+	}
+	return kept + text.slice(at);
+}
+
+/**
+ * `text` without its tags, read once from left to right: what stands between a `<` and the `>`
+ * that closes it is left out, tags inside tags too, so that taking one out never leaves another
+ * (`<<b>h2>`). A `<` that nothing closes is text, as a page shows it.
+ */
+function withoutTags(text: string): string {
+	let kept = "";
+	// What has been left out since the outermost `<`, in case nothing closes it.
+	let tag = "";
+	let depth = 0;
+	for (const character of text) {
+		if (character === "<") depth += 1;
+		if (depth === 0) kept += character;
+		else tag += character;
+		if (character === ">" && depth > 0) {
+			depth -= 1;
+			if (depth === 0) tag = "";
+		}
+	}
+	return kept + tag;
+}
+
+/** The heading as `plain` leaves it, which a line is compared with. */
+const PLAIN_HEADING = plain(CHECKS_HEADING);
+
 /** The body with the tool's section after it. */
 export function withChecksSection(body: string, section: string): string {
-	const before = withoutChecksSection(body).trimEnd();
+	const before = closed(withoutChecksSection(body).trimEnd());
 	return before === "" ? section : `${before}\n\n${section}`;
 }
+
+/**
+ * The model's body with what it left open closed: a code block, an HTML comment or another of
+ * the blocks Markdown hands to HTML until their end mark, a folded `<details>`. Left open, each
+ * would take in whatever follows, and the tool's section would be shown as code, or not shown
+ * at all, under a body that claims what it likes.
+ *
+ * It closes more readily than a renderer would, since it does not know a fence inside a comment
+ * from one outside: a closer too many leaves a stray line or shows the section as code, both in
+ * plain sight, which is the side to err on.
+ */
+function closed(body: string): string {
+	const closers: string[] = [];
+	// A fence is closed by a line of the same character, at least as long, with nothing after.
+	let fence: string | null = null;
+	for (const line of body.split("\n")) {
+		const marks = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+		if (!marks) continue;
+		const [, run = "", rest = ""] = marks;
+		if (fence === null) fence = run;
+		else if (run.startsWith(fence) && rest.trim() === "") fence = null;
+	}
+	if (fence !== null) closers.push(fence);
+	for (const [opener, closer] of HTML_UNTIL) {
+		if (body.lastIndexOf(opener) > body.lastIndexOf(closer)) closers.push(closer);
+	}
+	// A declaration, such as `<!DOCTYPE`, runs to the next `>`: one after the last `>` is open.
+	if (/<![A-Za-z]/.test(body.slice(body.lastIndexOf(">") + 1))) closers.push(">");
+	const opened = body.match(/<details[\s>]/gi)?.length ?? 0;
+	const ended = body.match(/<\/details\s*>/gi)?.length ?? 0;
+	for (let left = Math.min(opened - ended, MAX_FOLDS); left > 0; left -= 1) {
+		closers.push("</details>");
+	}
+	return closers.length === 0 ? body : `${body}\n${closers.join("\n")}`;
+}
+
+/**
+ * What starts a block that Markdown passes on as HTML until its end mark, or to the end of the
+ * text when there is none (CommonMark's HTML blocks 2, 3 and 5), each with that mark: a comment,
+ * a processing instruction, and CDATA. A page shows nothing of what is inside one.
+ */
+const HTML_UNTIL: readonly (readonly [string, string])[] = [
+	["<!--", "-->"],
+	["<?", "?>"],
+	["<![CDATA[", "]]>"],
+];
+
+/** Most `<details>` the tool closes after a body, which no body a person reads comes near. */
+const MAX_FOLDS = 50;
 
 function byteLength(text: string): number {
 	return new TextEncoder().encode(text).length;

@@ -65,8 +65,10 @@ export function RepositoryChecks({
 				agent's sandbox on the work as committed, in order, before anything is pushed. If one fails,
 				no pull request is opened and the agent is told what failed; after{" "}
 				{CHECK_LIMITS.failedRounds} failed rounds in one run the pull request is opened as a draft.
-				The pull request ends with a section, written by Gateweave, that lists each command, its
-				exit code and how long it took. Each command may run for {MINUTES} minutes.
+				The pull request ends with a section, written by Gateweave, that lists each command that ran
+				with its exit code and how long it took, and marks one that did not as not run. Each command
+				may run for {MINUTES} minutes. Every member of the workspace sees these commands, and each
+				pull request shows them: keep keys and passwords out of them.
 			</p>
 			{admin ? (
 				<form onSubmit={onSubmit} className="space-y-2">
@@ -76,6 +78,8 @@ export function RepositoryChecks({
 						aria-invalid={problem !== null}
 						value={text}
 						onChange={(event) => setText(event.target.value)}
+						// What is typed while a save is under way would be lost to what was saved.
+						readOnly={pending}
 						placeholder={"pnpm check\npnpm typecheck\npnpm test"}
 						// One line more than a repository can have, so a line too many is seen, not scrolled to.
 						rows={Math.max(3, Math.min(CHECK_LIMITS.commands + 1, text.split("\n").length))}
@@ -93,7 +97,7 @@ export function RepositoryChecks({
 							`One command to a line, at most ${CHECK_LIMITS.commands}, each run with bash in the repository's root. Leave it empty for no checks.`}
 					</p>
 					<Button type="submit" size="sm" disabled={pending || problem !== null || !changed}>
-						Save checks
+						{pending ? "Saving checks…" : "Save checks"}
 					</Button>
 				</form>
 			) : checks.length === 0 ? (
